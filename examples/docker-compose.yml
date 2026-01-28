@@ -1,0 +1,56 @@
+# Docker Compose for local OpenTelemetry development
+# Includes Jaeger for viewing traces
+
+version: '3.8'
+
+services:
+  # Jaeger all-in-one (includes collector, query, and UI)
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    ports:
+      # OTLP gRPC receiver (for protocol="grpc")
+      - "4317:4317"
+      # OTLP HTTP receiver (for protocol="http")
+      - "4318:4318"
+      # Jaeger UI
+      - "16686:16686"
+      # Jaeger collector HTTP
+      - "14268:14268"
+      # Jaeger collector gRPC
+      - "14250:14250"
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - otel
+
+  # Alternative: OpenTelemetry Collector + Jaeger
+  # Uncomment this section if you want a separate collector
+
+  # otel-collector:
+  #   image: otel/opentelemetry-collector:latest
+  #   container_name: otel-collector
+  #   command: ["--config=/etc/otel-collector-config.yaml"]
+  #   volumes:
+  #     - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+  #   ports:
+  #     - "4317:4317"   # OTLP gRPC receiver
+  #     - "4318:4318"   # OTLP HTTP receiver
+  #     - "8888:8888"   # Prometheus metrics
+  #     - "13133:13133" # Health check
+  #   depends_on:
+  #     - jaeger-backend
+  #   networks:
+  #     - otel
+
+  # jaeger-backend:
+  #   image: jaegertracing/all-in-one:latest
+  #   container_name: jaeger-backend
+  #   ports:
+  #     - "16686:16686"
+  #   networks:
+  #     - otel
+
+networks:
+  otel:
+    driver: bridge

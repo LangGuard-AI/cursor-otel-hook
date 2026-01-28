@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "description": "Track session start with OpenTelemetry"
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "description": "Track session end with OpenTelemetry"
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "description": "Track tool usage before execution"
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "description": "Track tool usage after execution"
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "description": "Track tool failures"
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "description": "Track shell commands before execution"
+      }
+    ],
+    "afterShellExecution": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "description": "Track shell commands after execution"
+      }
+    ],
+    "beforeMCPExecution": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "description": "Track MCP calls before execution"
+      }
+    ],
+    "afterMCPExecution": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "description": "Track MCP calls after execution"
+      }
+    ],
+    "beforeReadFile": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "description": "Track file reads"
+      }
+    ],
+    "afterFileEdit": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "description": "Track file edits"
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "description": "Track prompt submissions"
+      }
+    ],
+    "preCompact": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "description": "Track context compaction"
+      }
+    ],
+    "stop": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "loop_limit": 5,
+        "description": "Track agent stop/completion"
+      }
+    ],
+    "subagentStart": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "description": "Track subagent starts"
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "description": "Track subagent stops"
+      }
+    ],
+    "afterAgentResponse": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "description": "Track agent responses"
+      }
+    ],
+    "afterAgentThought": [
+      {
+        "command": "~/.cursor/hooks/otel_hook.sh",
+        "timeout": 5,
+        "description": "Track agent thoughts"
+      }
+    ]
+  }
+}
