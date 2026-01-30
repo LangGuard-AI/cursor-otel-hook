@@ -424,7 +424,34 @@ class CursorHookProcessor:
                 ctx = trace.set_span_in_context(trace.NonRecordingSpan(span_context))
                 return self.tracer.start_span(span_name, context=ctx)
 
-            # Fallback for non-sessionStart root spans
+            # For other root spans, try to use existing session trace_id
+            if (
+                conversation_id
+                and conversation_id != "unknown"
+                and self.context_manager
+            ):
+                session_trace_id = self.context_manager.get_conversation_trace_id(
+                    conversation_id
+                )
+                if session_trace_id:
+                    # Generate new span_id
+                    span_id = random.getrandbits(64)
+
+                    # Create SpanContext with session trace_id
+                    span_context = SpanContext(
+                        trace_id=session_trace_id,
+                        span_id=span_id,
+                        is_remote=False,
+                        trace_flags=TraceFlags(0x01),
+                    )
+
+                    # Create context and start span
+                    ctx = trace.set_span_in_context(
+                        trace.NonRecordingSpan(span_context)
+                    )
+                    return self.tracer.start_span(span_name, context=ctx)
+
+            # Fallback for spans with no conversation_id or no stored trace_id
             return self.tracer.start_span(span_name)
 
         if self.context_manager:
