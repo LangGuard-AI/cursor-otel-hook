@@ -33,6 +33,7 @@ venv.bak/
 *.swp
 *.swo
 *~
+.sisyphus/
 
 # Testing
 .pytest_cache/

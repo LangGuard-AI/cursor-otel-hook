@@ -44,13 +44,16 @@ class OTLPJSONSpanExporter(SpanExporter):
         self.service_name = service_name
 
         self.session = requests.Session()
-        self.session.headers.update({
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        })
+        self.session.headers.update(
+            {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
+        )
 
         if headers:
             self.session.headers.update(headers)
+            logger.info(f"Session headers updated with keys: {list(headers.keys())}")
 
         self._shutdown = False
         logger.info(f"Initialized OTLP JSON exporter for endpoint: {endpoint}")
@@ -66,8 +69,10 @@ class OTLPJSONSpanExporter(SpanExporter):
             otlp_json = self._encode_spans(spans)
 
             # Log the complete OTLP trace payload
-            logger.debug(f"Sending {len(spans)} spans to {self.endpoint}")
-            logger.debug(f"Complete OTLP JSON trace payload:\n{json.dumps(otlp_json, indent=2)}")
+            logger.info(f"Exporting {len(spans)} spans to {self.endpoint}")
+            logger.debug(
+                f"Complete OTLP JSON trace payload:\n{json.dumps(otlp_json, indent=2)}"
+            )
 
             try:
                 resp = self.session.post(
@@ -85,11 +90,13 @@ class OTLPJSONSpanExporter(SpanExporter):
                 )
 
             if resp.ok:
-                logger.debug(f"Successfully exported {len(spans)} spans")
+                logger.info(
+                    f"Export successful: {len(spans)} spans, HTTP {resp.status_code}, {resp.elapsed.total_seconds() * 1000:.0f}ms"
+                )
                 return SpanExportResult.SUCCESS
             else:
                 logger.error(
-                    f"Failed to export spans: {resp.status_code} - {resp.text}"
+                    f"Export failed: HTTP {resp.status_code}, response: {resp.text[:500]}"
                 )
                 return SpanExportResult.FAILURE
 
@@ -117,23 +124,17 @@ class OTLPJSONSpanExporter(SpanExporter):
 
         # Create resource attributes
         resource_attributes = [
-            {
-                "key": "service.name",
-                "value": {"stringValue": self.service_name}
-            }
+            {"key": "service.name", "value": {"stringValue": self.service_name}}
         ]
 
-        resource_spans.append({
-            "resource": {
-                "attributes": resource_attributes
-            },
-            "scopeSpans": [{
-                "scope": {
-                    "name": "cursor_otel_hook"
-                },
-                "spans": scope_spans
-            }]
-        })
+        resource_spans.append(
+            {
+                "resource": {"attributes": resource_attributes},
+                "scopeSpans": [
+                    {"scope": {"name": "cursor_otel_hook"}, "spans": scope_spans}
+                ],
+            }
+        )
 
         return {"resourceSpans": resource_spans}
 
@@ -142,9 +143,9 @@ class OTLPJSONSpanExporter(SpanExporter):
         ctx = span.get_span_context()
 
         # Format trace_id and span_id as hex strings
-        trace_id = format(ctx.trace_id, '032x')
-        span_id = format(ctx.span_id, '016x')
-        parent_span_id = format(span.parent.span_id, '016x') if span.parent else None
+        trace_id = format(ctx.trace_id, "032x")
+        span_id = format(ctx.span_id, "016x")
+        parent_span_id = format(span.parent.span_id, "016x") if span.parent else None
 
         otlp_span = {
             "traceId": trace_id,
@@ -215,9 +216,7 @@ class OTLPJSONSpanExporter(SpanExporter):
             StatusCode.ERROR: 2,
         }
 
-        otlp_status = {
-            "code": status_code_map.get(status.status_code, 0)
-        }
+        otlp_status = {"code": status_code_map.get(status.status_code, 0)}
 
         if status.description:
             otlp_status["message"] = status.description
@@ -268,7 +267,12 @@ class OTLPJSONSpanExporter(SpanExporter):
             return SpanExportResult.FAILURE
 
         try:
-            logger.debug(f"Sending batched OTLP JSON payload to {self.endpoint}")
+            span_count = sum(
+                len(scope_span.get("spans", []))
+                for rs in otlp_payload.get("resourceSpans", [])
+                for scope_span in rs.get("scopeSpans", [])
+            )
+            logger.info(f"Exporting {span_count} spans to {self.endpoint}")
             logger.debug(f"Payload: {json.dumps(otlp_payload, indent=2)}")
 
             try:
@@ -287,16 +291,13 @@ class OTLPJSONSpanExporter(SpanExporter):
                 )
 
             if resp.ok:
-                span_count = sum(
-                    len(scope_span.get("spans", []))
-                    for rs in otlp_payload.get("resourceSpans", [])
-                    for scope_span in rs.get("scopeSpans", [])
+                logger.info(
+                    f"Export successful: {span_count} spans, HTTP {resp.status_code}, {resp.elapsed.total_seconds() * 1000:.0f}ms"
                 )
-                logger.info(f"Successfully exported batched payload with {span_count} spans")
                 return SpanExportResult.SUCCESS
             else:
                 logger.error(
-                    f"Failed to export batched spans: {resp.status_code} - {resp.text}"
+                    f"Export failed: HTTP {resp.status_code}, response: {resp.text[:500]}"
                 )
                 return SpanExportResult.FAILURE
 

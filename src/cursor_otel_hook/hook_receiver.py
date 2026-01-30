@@ -15,14 +15,18 @@ from pathlib import Path
 
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider, ReadableSpan
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter, SpanExportResult
+from opentelemetry.sdk.trace.export import (
+    BatchSpanProcessor,
+    SpanExporter,
+    SpanExportResult,
+)
 from opentelemetry.sdk.resources import Resource, SERVICE_NAME
 from opentelemetry.trace import Status, StatusCode
 from typing import Sequence
 
 from .config import OTELConfig
 from .privacy import mask_sensitive_data
-
+from .context_manager import generate_session_trace_id
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -40,7 +44,9 @@ class LoggingSpanExporterWrapper(SpanExporter):
         logger.debug(f"Exporting {len(spans)} spans")
         for i, span in enumerate(spans):
             span_dict = self._span_to_dict(span)
-            logger.debug(f"Span {i+1}/{len(spans)}:\n{json.dumps(span_dict, indent=2, default=str)}")
+            logger.debug(
+                f"Span {i + 1}/{len(spans)}:\n{json.dumps(span_dict, indent=2, default=str)}"
+            )
 
         # Export via wrapped exporter
         return self.exporter.export(spans)
@@ -52,13 +58,13 @@ class LoggingSpanExporterWrapper(SpanExporter):
         result = {
             "name": span.name,
             "context": {
-                "trace_id": format(ctx.trace_id, '032x'),
-                "span_id": format(ctx.span_id, '016x'),
+                "trace_id": format(ctx.trace_id, "032x"),
+                "span_id": format(ctx.span_id, "016x"),
                 "trace_flags": ctx.trace_flags,
             },
-            "parent": {
-                "span_id": format(span.parent.span_id, '016x')
-            } if span.parent else None,
+            "parent": {"span_id": format(span.parent.span_id, "016x")}
+            if span.parent
+            else None,
             "start_time": span.start_time,
             "end_time": span.end_time,
             "attributes": dict(span.attributes) if span.attributes else {},
@@ -66,7 +72,7 @@ class LoggingSpanExporterWrapper(SpanExporter):
                 {
                     "name": event.name,
                     "timestamp": event.timestamp,
-                    "attributes": dict(event.attributes) if event.attributes else {}
+                    "attributes": dict(event.attributes) if event.attributes else {},
                 }
                 for event in (span.events or [])
             ],
@@ -105,7 +111,7 @@ class LoggingSpanExporterWrapper(SpanExporter):
         logger.debug(f"Batched payload contains {span_count} spans")
 
         # Pass through to wrapped exporter
-        if hasattr(self.exporter, 'export_otlp_json'):
+        if hasattr(self.exporter, "export_otlp_json"):
             return self.exporter.export_otlp_json(otlp_payload)
         else:
             logger.error("Wrapped exporter doesn't support export_otlp_json")
@@ -118,12 +124,16 @@ class CursorHookProcessor:
     def __init__(self, config: OTELConfig, debug: bool = False):
         self.config = config
         self.debug = debug
-        logger.info(f"Initializing CursorHookProcessor with endpoint: {config.endpoint}")
+        logger.info(
+            f"Initializing CursorHookProcessor with endpoint: {config.endpoint}"
+        )
         logger.info(f"Protocol: {config.protocol}, Service: {config.service_name}")
         logger.info(f"Debug mode: {debug}")
         self.span_processor = None  # Will be set by _setup_tracer
         self.context_manager = None  # Will be set for batching mode
         self.tracer = self._setup_tracer()
+        # Check endpoint connectivity (non-blocking warning only)
+        self._check_endpoint_connectivity()
 
     def _setup_tracer(self) -> trace.Tracer:
         """Initialize OpenTelemetry tracer with OTLP exporter"""
@@ -151,10 +161,26 @@ class CursorHookProcessor:
             from .batching_processor import GenerationBatchingProcessor
             from .context_manager import GenerationContextManager
 
-            logger.info("Using custom HTTP OTLP exporter (JSON format) with generation batching")
+            # Ensure endpoint has /v1/traces path for OTLP HTTP spec
+            endpoint = self.config.endpoint
+            if not endpoint.endswith("/v1/traces"):
+                if endpoint.endswith("/"):
+                    endpoint = endpoint + "v1/traces"
+                else:
+                    endpoint = endpoint + "/v1/traces"
+                logger.warning(f"Appended '/v1/traces' to endpoint: {endpoint}")
+
+            logger.info(f"Using HTTP/JSON OTLP exporter with endpoint: {endpoint}")
+
+            # Log auth headers (keys only, not values)
+            if self.config.headers:
+                header_keys = list(self.config.headers.keys())
+                logger.info(f"Auth headers configured: {header_keys}")
+            else:
+                logger.warning("No auth headers configured - requests may be rejected")
 
             otlp_exporter = OTLPJSONSpanExporter(
-                endpoint=self.config.endpoint,
+                endpoint=endpoint,
                 headers=self.config.headers,
                 timeout=self.config.timeout,
                 service_name=self.config.service_name,
@@ -166,7 +192,9 @@ class CursorHookProcessor:
 
             # Use GenerationBatchingProcessor instead of BatchSpanProcessor
             # Pass debug flag to preserve files in debug mode
-            span_processor = GenerationBatchingProcessor(wrapped_exporter, debug=self.debug)
+            span_processor = GenerationBatchingProcessor(
+                wrapped_exporter, debug=self.debug
+            )
             self.span_processor = span_processor  # Store reference for flushing
 
             # Initialize context manager for cross-process parent-child relationships
@@ -181,6 +209,7 @@ class CursorHookProcessor:
             from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
                 OTLPSpanExporter,
             )
+
             logger.info("Using HTTP OTLP exporter (protobuf format)")
             # HTTP exporter uses protobuf by default
             # The endpoint should include /v1/traces for OTLP HTTP
@@ -191,6 +220,7 @@ class CursorHookProcessor:
             from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
                 OTLPSpanExporter,
             )
+
             logger.info(f"Using gRPC OTLP exporter (insecure={self.config.insecure})")
             # gRPC exporter supports insecure parameter
             exporter_kwargs["insecure"] = self.config.insecure
@@ -214,6 +244,27 @@ class CursorHookProcessor:
 
         return trace.get_tracer(__name__)
 
+    def _check_endpoint_connectivity(self) -> bool:
+        """
+        Quick connectivity check to endpoint (non-blocking warning only).
+
+        Performs a HEAD request to the endpoint with a 2-second timeout.
+        Logs INFO if reachable, WARNING if unreachable. Does not fail startup.
+
+        Returns:
+            True if endpoint is reachable, False otherwise
+        """
+        try:
+            import urllib.request
+
+            req = urllib.request.Request(self.config.endpoint, method="HEAD")
+            urllib.request.urlopen(req, timeout=2)
+            logger.info(f"Endpoint reachable: {self.config.endpoint}")
+            return True
+        except Exception as e:
+            logger.warning(f"Endpoint may be unreachable: {self.config.endpoint} ({e})")
+            return False
+
     def process_hook(self, hook_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Process a hook event and create appropriate OTEL spans
@@ -224,11 +275,19 @@ class CursorHookProcessor:
         conversation_id = hook_data.get("conversation_id", "unknown")
         generation_id = hook_data.get("generation_id", "unknown")
 
+        # Log processing start with event and generation_id
+        gen_id_display = generation_id[:16] if generation_id != "unknown" else "unknown"
+        logger.info(f"Processing: event={hook_event}, generation={gen_id_display}...")
+
         # Check if this is a 'stop' event - if so, flush the generation
         if hook_event == "stop" and generation_id != "unknown":
-            logger.info(f"Stop event detected for generation {generation_id}, flushing spans")
-            if self.span_processor and hasattr(self.span_processor, 'flush_generation'):
-                self.span_processor.flush_generation(generation_id, self.config.service_name)
+            logger.info(
+                f"Stop event detected for generation {generation_id}, flushing spans"
+            )
+            if self.span_processor and hasattr(self.span_processor, "flush_generation"):
+                self.span_processor.flush_generation(
+                    generation_id, self.config.service_name
+                )
             # Cleanup context after flushing
             if self.context_manager:
                 self.context_manager.cleanup_context(generation_id)
@@ -243,10 +302,25 @@ class CursorHookProcessor:
         # Get parent context if context manager is enabled
         parent_context = None
         if self.context_manager and generation_id != "unknown":
-            parent_context = self.context_manager.get_parent_context(generation_id, hook_event)
+            parent_context = self.context_manager.get_parent_context(
+                generation_id, hook_event
+            )
 
         # Create span with or without parent context
-        span = self._create_span_with_context(span_name, parent_context)
+        span = self._create_span_with_context(
+            span_name,
+            parent_context,
+            conversation_id=conversation_id,
+            hook_event=hook_event,
+            generation_id=generation_id,
+        )
+
+        # Log span creation with trace_id
+        ctx = span.get_span_context()
+        trace_id_prefix = format(ctx.trace_id, "032x")[:16]
+        logger.info(
+            f"Created span: {span_name} (generation: {gen_id_display}, trace: {trace_id_prefix}...)"
+        )
 
         with span:
             try:
@@ -261,7 +335,9 @@ class CursorHookProcessor:
 
                 # Add response attributes
                 if "permission" in response:
-                    span.set_attribute("langsmith.metadata.permission", response["permission"])
+                    span.set_attribute(
+                        "langsmith.metadata.permission", response["permission"]
+                    )
 
                 # Set status as OK
                 span.set_status(Status(StatusCode.OK))
@@ -281,36 +357,135 @@ class CursorHookProcessor:
                 duration = time.time() - start_time
                 span.set_attribute("langsmith.metadata.duration_ms", duration * 1000)
 
-                # Save span context for future spans to use as parent
-                if self.context_manager and generation_id != "unknown":
+                # Log span completion with duration
+                logger.info(
+                    f"Span completed: {span_name} (duration: {duration * 1000:.1f}ms)"
+                )
+
+                if self.context_manager:
                     ctx = span.get_span_context()
-                    self.context_manager.save_span_context(
-                        generation_id=generation_id,
-                        hook_event=hook_event,
-                        trace_id=ctx.trace_id,
-                        span_id=ctx.span_id,
-                    )
+
+                    if hook_event == "sessionStart" and conversation_id != "unknown":
+                        self.context_manager.save_conversation_trace_id(
+                            conversation_id=conversation_id,
+                            trace_id=ctx.trace_id,
+                        )
+
+                    if generation_id != "unknown":
+                        self.context_manager.save_span_context(
+                            generation_id=generation_id,
+                            hook_event=hook_event,
+                            trace_id=ctx.trace_id,
+                            span_id=ctx.span_id,
+                        )
 
     def _create_span_with_context(
         self,
         span_name: str,
-        parent_context: Optional[Dict[str, Any]] = None
+        parent_context: Optional[Dict[str, Any]] = None,
+        conversation_id: Optional[str] = None,
+        hook_event: Optional[str] = None,
+        generation_id: Optional[str] = None,
     ) -> trace.Span:
         """
         Create a span with explicit parent context.
 
         If parent_context is provided, creates the span as a child of that context.
         Otherwise, creates a new root span.
+
+        For sessionStart events, generates a deterministic trace_id from conversation_id.
+        For other events, uses the stored session trace_id if available.
         """
+        from opentelemetry.trace import SpanContext, TraceFlags
+        from opentelemetry import context as otel_context
+        import random
+
         if parent_context is None:
-            # Create root span
+            # For sessionStart, generate deterministic trace_id from conversation_id
+            if (
+                hook_event == "sessionStart"
+                and conversation_id
+                and conversation_id != "unknown"
+            ):
+                session_trace_id = generate_session_trace_id(conversation_id)
+
+                # Generate a new span_id
+                span_id = random.getrandbits(64)
+
+                # Create SpanContext with our deterministic trace_id
+                span_context = SpanContext(
+                    trace_id=session_trace_id,
+                    span_id=span_id,
+                    is_remote=False,
+                    trace_flags=TraceFlags(0x01),
+                )
+
+                # Create context and start span
+                ctx = trace.set_span_in_context(trace.NonRecordingSpan(span_context))
+                return self.tracer.start_span(span_name, context=ctx)
+
+            # For other root spans, try to use existing session trace_id
+            if (
+                conversation_id
+                and conversation_id != "unknown"
+                and self.context_manager
+            ):
+                session_trace_id = self.context_manager.get_conversation_trace_id(
+                    conversation_id
+                )
+                if session_trace_id:
+                    # Generate new span_id
+                    span_id = random.getrandbits(64)
+
+                    # Create SpanContext with session trace_id
+                    span_context = SpanContext(
+                        trace_id=session_trace_id,
+                        span_id=span_id,
+                        is_remote=False,
+                        trace_flags=TraceFlags(0x01),
+                    )
+
+                    # Create context and start span
+                    ctx = trace.set_span_in_context(
+                        trace.NonRecordingSpan(span_context)
+                    )
+                    return self.tracer.start_span(span_name, context=ctx)
+
+            # Fallback for spans with no conversation_id or no stored trace_id
             return self.tracer.start_span(span_name)
 
-        # Create span with explicit parent
-        from opentelemetry.trace import SpanContext, TraceFlags, Link
-        from opentelemetry import context as otel_context
+        if self.context_manager:
+            session_trace_id = None
 
-        # Create parent SpanContext
+            if generation_id and generation_id != "unknown":
+                session_trace_id = self.context_manager.get_session_trace_id(
+                    generation_id
+                )
+
+            if (
+                not session_trace_id
+                and conversation_id
+                and conversation_id != "unknown"
+            ):
+                session_trace_id = self.context_manager.get_conversation_trace_id(
+                    conversation_id
+                )
+
+            if session_trace_id:
+                parent_span_context = SpanContext(
+                    trace_id=session_trace_id,
+                    span_id=parent_context["span_id"],
+                    is_remote=True,
+                    trace_flags=TraceFlags(0x01),
+                )
+
+                ctx = trace.set_span_in_context(
+                    trace.NonRecordingSpan(parent_span_context)
+                )
+
+                return self.tracer.start_span(span_name, context=ctx)
+
+        # Fallback: use parent_context as-is
         parent_span_context = SpanContext(
             trace_id=parent_context["trace_id"],
             span_id=parent_context["span_id"],
@@ -324,7 +499,9 @@ class CursorHookProcessor:
         # Start span with this parent context
         return self.tracer.start_span(span_name, context=ctx)
 
-    def _add_common_attributes(self, span: trace.Span, hook_data: Dict[str, Any]) -> None:
+    def _add_common_attributes(
+        self, span: trace.Span, hook_data: Dict[str, Any]
+    ) -> None:
         """Add common attributes using LangSmith/GenAI conventions"""
 
         # Get span context to access OTEL IDs
@@ -332,22 +509,28 @@ class CursorHookProcessor:
 
         # Session and trace identifiers (LangSmith convention)
         # IMPORTANT: Use actual OTEL trace_id, not generation_id
-        span.set_attribute("langsmith.trace.id", format(ctx.trace_id, '032x'))
+        span.set_attribute("langsmith.trace.id", format(ctx.trace_id, "032x"))
 
         # Add span ID derived from OTEL context
-        span.set_attribute("langsmith.span.id", format(ctx.span_id, '016x'))
+        span.set_attribute("langsmith.span.id", format(ctx.span_id, "016x"))
 
         # Add parent span ID if it exists
         if span.parent:
-            span.set_attribute("langsmith.span.parent_id", format(span.parent.span_id, '016x'))
+            span.set_attribute(
+                "langsmith.span.parent_id", format(span.parent.span_id, "016x")
+            )
 
         # Session ID comes from Cursor's conversation_id
         if "conversation_id" in hook_data:
-            span.set_attribute("langsmith.trace.session_id", hook_data["conversation_id"])
+            span.set_attribute(
+                "langsmith.trace.session_id", hook_data["conversation_id"]
+            )
 
         # Preserve generation_id as metadata (not as trace ID)
         if "generation_id" in hook_data:
-            span.set_attribute("langsmith.metadata.generation_id", hook_data["generation_id"])
+            span.set_attribute(
+                "langsmith.metadata.generation_id", hook_data["generation_id"]
+            )
 
         # Model information (GenAI convention)
         if "model" in hook_data:
@@ -365,20 +548,28 @@ class CursorHookProcessor:
 
         # Additional metadata (LangSmith convention)
         if "cursor_version" in hook_data:
-            span.set_attribute("langsmith.metadata.cursor_version", hook_data["cursor_version"])
+            span.set_attribute(
+                "langsmith.metadata.cursor_version", hook_data["cursor_version"]
+            )
         if "user_email" in hook_data:
             span.set_attribute("langsmith.metadata.user_email", hook_data["user_email"])
         if "transcript_path" in hook_data:
-            span.set_attribute("langsmith.metadata.transcript_path", hook_data["transcript_path"])
+            span.set_attribute(
+                "langsmith.metadata.transcript_path", hook_data["transcript_path"]
+            )
 
         # Workspace context
         workspace_roots = hook_data.get("workspace_roots", [])
         if workspace_roots:
-            span.set_attribute("langsmith.metadata.workspace_roots", json.dumps(workspace_roots))
+            span.set_attribute(
+                "langsmith.metadata.workspace_roots", json.dumps(workspace_roots)
+            )
 
         # Store hook event type
         if "hook_event_name" in hook_data:
-            span.set_attribute("langsmith.metadata.hook_event", hook_data["hook_event_name"])
+            span.set_attribute(
+                "langsmith.metadata.hook_event", hook_data["hook_event_name"]
+            )
 
     def _add_event_specific_attributes(
         self, span: trace.Span, event: str, hook_data: Dict[str, Any]
@@ -399,7 +590,9 @@ class CursorHookProcessor:
         if event in ["sessionStart", "sessionEnd"]:
             for attr in ["session_id", "is_background_agent", "composer_mode"]:
                 if attr in hook_data:
-                    span.set_attribute(f"langsmith.metadata.{attr}", str(hook_data[attr]))
+                    span.set_attribute(
+                        f"langsmith.metadata.{attr}", str(hook_data[attr])
+                    )
 
         # Tool use events (GenAI convention)
         elif event in ["preToolUse", "postToolUse", "postToolUseFailure"]:
@@ -409,7 +602,9 @@ class CursorHookProcessor:
             if "tool_input" in hook_data:
                 tool_input = hook_data["tool_input"]
                 # Store as invocation parameters
-                span.set_attribute("langsmith.metadata.tool_input", json.dumps(tool_input))
+                span.set_attribute(
+                    "langsmith.metadata.tool_input", json.dumps(tool_input)
+                )
                 # Also store arguments in standard format
                 if isinstance(tool_input, dict):
                     span.set_attribute("gen_ai.tool.arguments", json.dumps(tool_input))
@@ -426,14 +621,23 @@ class CursorHookProcessor:
             span.set_attribute("gen_ai.tool.name", "bash")
 
             if "command" in hook_data:
-                span.set_attribute("gen_ai.tool.arguments", json.dumps({"command": hook_data["command"]}))
-                span.set_attribute("langsmith.metadata.shell_command", hook_data["command"])
+                span.set_attribute(
+                    "gen_ai.tool.arguments",
+                    json.dumps({"command": hook_data["command"]}),
+                )
+                span.set_attribute(
+                    "langsmith.metadata.shell_command", hook_data["command"]
+                )
             if "cwd" in hook_data:
                 span.set_attribute("langsmith.metadata.shell_cwd", hook_data["cwd"])
             if "timeout" in hook_data:
-                span.set_attribute("langsmith.metadata.shell_timeout", hook_data["timeout"])
+                span.set_attribute(
+                    "langsmith.metadata.shell_timeout", hook_data["timeout"]
+                )
             if "exit_code" in hook_data:
-                span.set_attribute("langsmith.metadata.shell_exit_code", hook_data["exit_code"])
+                span.set_attribute(
+                    "langsmith.metadata.shell_exit_code", hook_data["exit_code"]
+                )
 
         # MCP execution (treat as tool)
         elif event in ["beforeMCPExecution", "afterMCPExecution"]:
@@ -444,10 +648,14 @@ class CursorHookProcessor:
                 span.set_attribute("gen_ai.tool.name", tool_name)
 
             if "mcp_input" in hook_data:
-                span.set_attribute("gen_ai.tool.arguments", json.dumps(hook_data["mcp_input"]))
+                span.set_attribute(
+                    "gen_ai.tool.arguments", json.dumps(hook_data["mcp_input"])
+                )
 
             if "mcp_server" in hook_data:
-                span.set_attribute("langsmith.metadata.mcp_server", hook_data["mcp_server"])
+                span.set_attribute(
+                    "langsmith.metadata.mcp_server", hook_data["mcp_server"]
+                )
 
         # File operations (treat as tool)
         elif event in ["beforeReadFile", "afterFileEdit"]:
@@ -455,11 +663,18 @@ class CursorHookProcessor:
             span.set_attribute("gen_ai.tool.name", tool_name)
 
             if "file_path" in hook_data:
-                span.set_attribute("gen_ai.tool.arguments", json.dumps({"file_path": hook_data["file_path"]}))
-                span.set_attribute("langsmith.metadata.file_path", hook_data["file_path"])
+                span.set_attribute(
+                    "gen_ai.tool.arguments",
+                    json.dumps({"file_path": hook_data["file_path"]}),
+                )
+                span.set_attribute(
+                    "langsmith.metadata.file_path", hook_data["file_path"]
+                )
 
             if "edits" in hook_data:
-                span.set_attribute("langsmith.metadata.edit_count", len(hook_data["edits"]))
+                span.set_attribute(
+                    "langsmith.metadata.edit_count", len(hook_data["edits"])
+                )
 
         # Prompt submission (GenAI convention)
         elif event == "beforeSubmitPrompt":
@@ -479,23 +694,35 @@ class CursorHookProcessor:
         # Context compaction
         elif event == "preCompact":
             if "context_size" in hook_data:
-                span.set_attribute("langsmith.metadata.context_size", hook_data["context_size"])
+                span.set_attribute(
+                    "langsmith.metadata.context_size", hook_data["context_size"]
+                )
             if "context_limit" in hook_data:
-                span.set_attribute("langsmith.metadata.context_limit", hook_data["context_limit"])
+                span.set_attribute(
+                    "langsmith.metadata.context_limit", hook_data["context_limit"]
+                )
 
         # Stop/completion events
         elif event == "stop":
             if "status" in hook_data:
-                span.set_attribute("langsmith.metadata.completion_status", hook_data["status"])
+                span.set_attribute(
+                    "langsmith.metadata.completion_status", hook_data["status"]
+                )
             if "loop_count" in hook_data:
-                span.set_attribute("langsmith.metadata.loop_count", hook_data["loop_count"])
+                span.set_attribute(
+                    "langsmith.metadata.loop_count", hook_data["loop_count"]
+                )
 
         # Subagent events (treat as chain)
         elif event in ["subagentStart", "subagentStop"]:
             if "subagent_type" in hook_data:
-                span.set_attribute("langsmith.metadata.subagent_type", hook_data["subagent_type"])
+                span.set_attribute(
+                    "langsmith.metadata.subagent_type", hook_data["subagent_type"]
+                )
             if "subagent_task" in hook_data:
-                span.set_attribute("langsmith.metadata.subagent_task", hook_data["subagent_task"])
+                span.set_attribute(
+                    "langsmith.metadata.subagent_task", hook_data["subagent_task"]
+                )
 
         # Add all remaining fields as JSON for debugging
         span.set_attribute("langsmith.metadata.raw_event", json.dumps(hook_data))
@@ -538,7 +765,9 @@ class CursorHookProcessor:
         }
         return kind_map.get(event, "chain")
 
-    def _generate_response(self, event: str, hook_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _generate_response(
+        self, event: str, hook_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
         Generate appropriate response for the hook event
 
@@ -603,7 +832,7 @@ Examples:
 
     # Setup logging
     # Only show INFO and above when debug is off, DEBUG and above when on
-    log_level = logging.DEBUG if args.debug else logging.WARNING
+    log_level = logging.DEBUG if args.debug else logging.INFO
     log_file = args.log_file
 
     # If no log file specified, use Cursor profile directory
@@ -617,11 +846,11 @@ Examples:
 
     logging.basicConfig(
         level=log_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
-            logging.FileHandler(log_file, encoding='utf-8'),
-            logging.StreamHandler(sys.stderr) if args.debug else logging.NullHandler()
-        ]
+            logging.FileHandler(log_file, encoding="utf-8"),
+            logging.StreamHandler(sys.stderr) if args.debug else logging.NullHandler(),
+        ],
     )
 
     logger.info("=" * 60)
@@ -631,7 +860,9 @@ Examples:
 
     try:
         # Load configuration
-        logger.info(f"Loading configuration from: {args.config or 'environment variables'}")
+        logger.info(
+            f"Loading configuration from: {args.config or 'environment variables'}"
+        )
         config = OTELConfig.load(args.config)
         logger.info(f"Configuration loaded successfully")
         logger.debug(f"Config details: {config}")
@@ -665,7 +896,9 @@ Examples:
 
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON input: {e}")
-        logger.error(f"Input received: {hook_input if 'hook_input' in locals() else 'N/A'}")
+        logger.error(
+            f"Input received: {hook_input if 'hook_input' in locals() else 'N/A'}"
+        )
         print(f"Error: Invalid JSON input: {e}", file=sys.stderr)
         sys.exit(1)
 
@@ -674,6 +907,7 @@ Examples:
         print(f"Error: {e}", file=sys.stderr)
         if args.debug:
             import traceback
+
             traceback.print_exc(file=sys.stderr)
         sys.exit(1)
 

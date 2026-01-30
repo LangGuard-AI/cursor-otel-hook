@@ -1,10 +1,13 @@
 """Configuration management for Cursor OTEL Hook"""
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -35,7 +38,8 @@ class OTELConfig:
             service_name=os.getenv("OTEL_SERVICE_NAME", "cursor-agent"),
             insecure=os.getenv("OTEL_EXPORTER_OTLP_INSECURE", "true").lower() == "true",
             headers=cls._parse_headers(os.getenv("OTEL_EXPORTER_OTLP_HEADERS", "")),
-            mask_prompts=os.getenv("CURSOR_OTEL_MASK_PROMPTS", "false").lower() == "true",
+            mask_prompts=os.getenv("CURSOR_OTEL_MASK_PROMPTS", "false").lower()
+            == "true",
             timeout=int(os.getenv("OTEL_EXPORTER_OTLP_TIMEOUT", "30")),
             protocol=protocol,
         )
@@ -44,6 +48,7 @@ class OTELConfig:
     def from_file(cls, config_path: str) -> "OTELConfig":
         """Load configuration from JSON file using OTEL standard env var names"""
         import logging
+
         logger = logging.getLogger(__name__)
 
         path = Path(config_path)
@@ -59,12 +64,18 @@ class OTELConfig:
         endpoint = data.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
         service_name = data.get("OTEL_SERVICE_NAME", "cursor-agent")
         protocol = data.get("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc").lower()
-        insecure = str(data.get("OTEL_EXPORTER_OTLP_INSECURE", "true")).lower() == "true"
+        insecure = (
+            str(data.get("OTEL_EXPORTER_OTLP_INSECURE", "true")).lower() == "true"
+        )
         headers = data.get("OTEL_EXPORTER_OTLP_HEADERS")
-        mask_prompts = str(data.get("CURSOR_OTEL_MASK_PROMPTS", "false")).lower() == "true"
+        mask_prompts = (
+            str(data.get("CURSOR_OTEL_MASK_PROMPTS", "false")).lower() == "true"
+        )
         timeout = int(data.get("OTEL_EXPORTER_OTLP_TIMEOUT", "30"))
 
-        logger.debug(f"Parsed values - endpoint: {endpoint}, protocol: {protocol}, headers: {headers}")
+        logger.debug(
+            f"Parsed values - endpoint: {endpoint}, protocol: {protocol}, headers: {headers}"
+        )
 
         # Parse headers if it's a string (same format as env var)
         if isinstance(headers, str):
@@ -97,21 +108,35 @@ class OTELConfig:
         1. Config file (if provided)
         2. Environment variables
         """
-        import logging
-        logger = logging.getLogger(__name__)
-
         if config_file:
             try:
-                return cls.from_file(config_file)
+                config = cls.from_file(config_file)
             except FileNotFoundError:
-                logger.warning(f"Config file not found: {config_file}, falling back to environment variables")
-                # Fall back to env vars if file doesn't exist
-                pass
+                logger.warning(
+                    f"Config file not found: {config_file}, falling back to environment variables"
+                )
+                config = cls.from_env()
             except Exception as e:
                 logger.error(f"Error loading config file: {e}")
                 raise
+        else:
+            config = cls.from_env()
 
-        return cls.from_env()
+        if not cls._is_valid_endpoint(config.endpoint):
+            logger.warning(f"Endpoint URL may be malformed: {config.endpoint}")
+
+        logger.info(
+            f"Configuration loaded: endpoint={config.endpoint}, "
+            f"protocol={config.protocol}, service={config.service_name}"
+        )
+        logger.info(f"Auth headers configured: {bool(config.headers)}")
+
+        return config
+
+    @staticmethod
+    def _is_valid_endpoint(endpoint: str) -> bool:
+        """Check if endpoint URL is well-formed (starts with http:// or https://)"""
+        return endpoint.startswith("http://") or endpoint.startswith("https://")
 
     @staticmethod
     def _parse_headers(headers_str: str) -> Optional[dict]:
