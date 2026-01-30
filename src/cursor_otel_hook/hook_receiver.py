@@ -362,15 +362,22 @@ class CursorHookProcessor:
                     f"Span completed: {span_name} (duration: {duration * 1000:.1f}ms)"
                 )
 
-                # Save span context for future spans to use as parent
-                if self.context_manager and generation_id != "unknown":
+                if self.context_manager:
                     ctx = span.get_span_context()
-                    self.context_manager.save_span_context(
-                        generation_id=generation_id,
-                        hook_event=hook_event,
-                        trace_id=ctx.trace_id,
-                        span_id=ctx.span_id,
-                    )
+
+                    if hook_event == "sessionStart" and conversation_id != "unknown":
+                        self.context_manager.save_conversation_trace_id(
+                            conversation_id=conversation_id,
+                            trace_id=ctx.trace_id,
+                        )
+
+                    if generation_id != "unknown":
+                        self.context_manager.save_span_context(
+                            generation_id=generation_id,
+                            hook_event=hook_event,
+                            trace_id=ctx.trace_id,
+                            span_id=ctx.span_id,
+                        )
 
     def _create_span_with_context(
         self,
@@ -420,24 +427,35 @@ class CursorHookProcessor:
             # Fallback for non-sessionStart root spans
             return self.tracer.start_span(span_name)
 
-        # For child spans, use session trace_id if available
-        if generation_id and generation_id != "unknown" and self.context_manager:
-            session_trace_id = self.context_manager.get_session_trace_id(generation_id)
+        if self.context_manager:
+            session_trace_id = None
+
+            if generation_id and generation_id != "unknown":
+                session_trace_id = self.context_manager.get_session_trace_id(
+                    generation_id
+                )
+
+            if (
+                not session_trace_id
+                and conversation_id
+                and conversation_id != "unknown"
+            ):
+                session_trace_id = self.context_manager.get_conversation_trace_id(
+                    conversation_id
+                )
+
             if session_trace_id:
-                # Use session trace_id with parent's span_id
                 parent_span_context = SpanContext(
-                    trace_id=session_trace_id,  # Use session trace_id
+                    trace_id=session_trace_id,
                     span_id=parent_context["span_id"],
                     is_remote=True,
                     trace_flags=TraceFlags(0x01),
                 )
 
-                # Create a context with this parent
                 ctx = trace.set_span_in_context(
                     trace.NonRecordingSpan(parent_span_context)
                 )
 
-                # Start span with this parent context
                 return self.tracer.start_span(span_name, context=ctx)
 
         # Fallback: use parent_context as-is

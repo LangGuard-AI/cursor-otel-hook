@@ -99,6 +99,10 @@ class GenerationContextManager:
         """Get the context file path for a generation."""
         return self.storage_dir / f"{generation_id}_context.json"
 
+    def get_conversation_context_file(self, conversation_id: str) -> Path:
+        """Get conversation-level context file path."""
+        return self.storage_dir / f"conversation_{conversation_id}.json"
+
     def get_parent_context(
         self, generation_id: str, hook_event: str
     ) -> Optional[Dict[str, Any]]:
@@ -162,6 +166,62 @@ class GenerationContextManager:
 
         except Exception as e:
             logger.error(f"Error reading session trace_id: {e}", exc_info=True)
+            return None
+
+    def save_conversation_trace_id(self, conversation_id: str, trace_id: int) -> None:
+        """Save session trace_id using conversation_id as key."""
+        context_file = self.get_conversation_context_file(conversation_id)
+
+        context = {}
+        if context_file.exists():
+            try:
+                with open(context_file, "r", encoding="utf-8") as f:
+                    lock_file(f, exclusive=False)
+                    try:
+                        context = json.load(f)
+                    finally:
+                        unlock_file(f)
+            except Exception as e:
+                logger.warning(f"Error reading conversation context: {e}")
+
+        context["session_trace_id"] = trace_id
+        context["timestamp"] = time.time()
+
+        try:
+            with open(context_file, "w", encoding="utf-8") as f:
+                lock_file(f, exclusive=True)
+                try:
+                    json.dump(context, f, indent=2)
+                    f.flush()
+                finally:
+                    unlock_file(f)
+
+            logger.debug(
+                f"Saved conversation trace_id for {conversation_id}: {format(trace_id, '032x')}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error saving conversation trace_id: {e}", exc_info=True)
+
+    def get_conversation_trace_id(self, conversation_id: str) -> Optional[int]:
+        """Get session trace_id using conversation_id as key."""
+        context_file = self.get_conversation_context_file(conversation_id)
+
+        if not context_file.exists():
+            return None
+
+        try:
+            with open(context_file, "r", encoding="utf-8") as f:
+                lock_file(f, exclusive=False)
+                try:
+                    context = json.load(f)
+                finally:
+                    unlock_file(f)
+
+            return context.get("session_trace_id")
+
+        except Exception as e:
+            logger.error(f"Error reading conversation trace_id: {e}", exc_info=True)
             return None
 
     def _determine_parent(
