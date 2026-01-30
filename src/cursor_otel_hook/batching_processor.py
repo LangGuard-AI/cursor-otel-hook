@@ -130,9 +130,10 @@ class GenerationBatchingProcessor(SpanProcessor):
                 return
 
             # Store span in temporary file
+            span_file = self.storage_dir / f"{generation_id}.jsonl"
             self._store_span(generation_id, span)
             logger.info(
-                f"Span queued for batch: {span.name} (generation: {generation_id[:16]}...)"
+                f"Span queued: {span.name} -> {span_file} (generation: {generation_id[:16]}...)"
             )
 
         except Exception as e:
@@ -284,10 +285,12 @@ class GenerationBatchingProcessor(SpanProcessor):
 
         try:
             logger.info(f"Flushing batch for generation: {generation_id[:16]}...")
+            flush_start = time.time()
 
             # Read all spans from file
             spans_data = []
             resource_attrs = {}
+            line_count = 0
 
             with open(span_file, "r", encoding="utf-8") as f:
                 # Acquire shared lock for reading
@@ -300,6 +303,7 @@ class GenerationBatchingProcessor(SpanProcessor):
                             if "_resource" in span_data:
                                 resource_attrs.update(span_data.pop("_resource"))
                             spans_data.append(span_data)
+                            line_count += 1
                 finally:
                     unlock_file(f)
 
@@ -307,6 +311,12 @@ class GenerationBatchingProcessor(SpanProcessor):
                 logger.warning(f"No valid spans found in {span_file}")
                 span_file.unlink()
                 return True
+
+            # Log temp file statistics
+            file_size = span_file.stat().st_size
+            logger.info(
+                f"Temp storage: {span_file} ({file_size} bytes, {line_count} spans)"
+            )
 
             logger.info(f"Batch contains {len(spans_data)} spans from {span_file}")
 
@@ -320,6 +330,10 @@ class GenerationBatchingProcessor(SpanProcessor):
 
             if result == SpanExportResult.SUCCESS:
                 logger.info(f"Batch export successful: {len(spans_data)} spans")
+                flush_duration_ms = (time.time() - flush_start) * 1000
+                logger.info(
+                    f"Flush complete: {len(spans_data)} spans exported in {flush_duration_ms:.0f}ms"
+                )
 
                 # Delete the temporary file unless debug mode is enabled
                 if self.debug:

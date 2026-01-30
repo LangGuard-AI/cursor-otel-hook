@@ -69,7 +69,7 @@ class OTLPJSONSpanExporter(SpanExporter):
             otlp_json = self._encode_spans(spans)
 
             # Log the complete OTLP trace payload
-            logger.info(f"Sending {len(spans)} spans to {self.endpoint}")
+            logger.info(f"Exporting {len(spans)} spans to {self.endpoint}")
             logger.debug(
                 f"Complete OTLP JSON trace payload:\n{json.dumps(otlp_json, indent=2)}"
             )
@@ -91,12 +91,12 @@ class OTLPJSONSpanExporter(SpanExporter):
 
             if resp.ok:
                 logger.info(
-                    f"Export successful: {len(spans)} spans (HTTP {resp.status_code})"
+                    f"Export successful: {len(spans)} spans, HTTP {resp.status_code}, {resp.elapsed.total_seconds() * 1000:.0f}ms"
                 )
                 return SpanExportResult.SUCCESS
             else:
                 logger.error(
-                    f"Export failed: HTTP {resp.status_code} - {resp.text[:500]}"
+                    f"Export failed: HTTP {resp.status_code}, response: {resp.text[:500]}"
                 )
                 return SpanExportResult.FAILURE
 
@@ -267,7 +267,12 @@ class OTLPJSONSpanExporter(SpanExporter):
             return SpanExportResult.FAILURE
 
         try:
-            logger.info(f"Sending batched OTLP JSON payload to {self.endpoint}")
+            span_count = sum(
+                len(scope_span.get("spans", []))
+                for rs in otlp_payload.get("resourceSpans", [])
+                for scope_span in rs.get("scopeSpans", [])
+            )
+            logger.info(f"Exporting {span_count} spans to {self.endpoint}")
             logger.debug(f"Payload: {json.dumps(otlp_payload, indent=2)}")
 
             try:
@@ -286,18 +291,13 @@ class OTLPJSONSpanExporter(SpanExporter):
                 )
 
             if resp.ok:
-                span_count = sum(
-                    len(scope_span.get("spans", []))
-                    for rs in otlp_payload.get("resourceSpans", [])
-                    for scope_span in rs.get("scopeSpans", [])
-                )
                 logger.info(
-                    f"Export successful: {span_count} spans (HTTP {resp.status_code})"
+                    f"Export successful: {span_count} spans, HTTP {resp.status_code}, {resp.elapsed.total_seconds() * 1000:.0f}ms"
                 )
                 return SpanExportResult.SUCCESS
             else:
                 logger.error(
-                    f"Export failed: HTTP {resp.status_code} - {resp.text[:500]}"
+                    f"Export failed: HTTP {resp.status_code}, response: {resp.text[:500]}"
                 )
                 return SpanExportResult.FAILURE
 
