@@ -24,13 +24,15 @@ from opentelemetry.trace import SpanKind, StatusCode
 logger = logging.getLogger(__name__)
 
 # Platform-specific file locking
-if sys.platform == 'win32':
+if sys.platform == "win32":
     import msvcrt
 
     def lock_file(file_handle, exclusive=True):
         """Lock file on Windows using msvcrt."""
         try:
-            msvcrt.locking(file_handle.fileno(), msvcrt.LK_LOCK if exclusive else msvcrt.LK_LOCK, 1)
+            msvcrt.locking(
+                file_handle.fileno(), msvcrt.LK_LOCK if exclusive else msvcrt.LK_LOCK, 1
+            )
         except IOError:
             pass  # File may already be locked
 
@@ -90,7 +92,9 @@ class GenerationBatchingProcessor(SpanProcessor):
             self.storage_dir = storage_dir
 
         self.storage_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(f"GenerationBatchingProcessor initialized with storage: {self.storage_dir}")
+        logger.info(
+            f"GenerationBatchingProcessor initialized with storage: {self.storage_dir}"
+        )
         if self.debug:
             logger.info(f"Debug mode enabled - temporary files will be preserved")
 
@@ -118,14 +122,18 @@ class GenerationBatchingProcessor(SpanProcessor):
                 generation_id = span.attributes.get("langsmith.metadata.generation_id")
 
             if not generation_id:
-                logger.warning("Span has no generation_id, cannot batch. Exporting immediately.")
+                logger.warning(
+                    "Span has no generation_id, cannot batch. Exporting immediately."
+                )
                 # If no generation_id, export immediately as fallback
                 self.exporter.export([span])
                 return
 
             # Store span in temporary file
             self._store_span(generation_id, span)
-            logger.debug(f"Stored span {span.name} for generation {generation_id}")
+            logger.info(
+                f"Span queued for batch: {span.name} (generation: {generation_id[:16]}...)"
+            )
 
         except Exception as e:
             logger.error(f"Error storing span: {e}", exc_info=True)
@@ -139,11 +147,11 @@ class GenerationBatchingProcessor(SpanProcessor):
 
         # Append to file with file locking (in case of concurrent access)
         try:
-            with open(span_file, 'a', encoding='utf-8') as f:
+            with open(span_file, "a", encoding="utf-8") as f:
                 # Acquire exclusive lock
                 lock_file(f, exclusive=True)
                 try:
-                    f.write(json.dumps(span_data, default=str) + '\n')
+                    f.write(json.dumps(span_data, default=str) + "\n")
                     f.flush()
                 finally:
                     # Release lock
@@ -161,9 +169,9 @@ class GenerationBatchingProcessor(SpanProcessor):
         ctx = span.get_span_context()
 
         # Format IDs as hex strings
-        trace_id = format(ctx.trace_id, '032x')
-        span_id = format(ctx.span_id, '016x')
-        parent_span_id = format(span.parent.span_id, '016x') if span.parent else None
+        trace_id = format(ctx.trace_id, "032x")
+        span_id = format(ctx.span_id, "016x")
+        parent_span_id = format(span.parent.span_id, "016x") if span.parent else None
 
         # Build OTLP span structure
         otlp_span = {
@@ -236,9 +244,7 @@ class GenerationBatchingProcessor(SpanProcessor):
             StatusCode.ERROR: 2,
         }
 
-        otlp_status = {
-            "code": status_code_map.get(status.status_code, 0)
-        }
+        otlp_status = {"code": status_code_map.get(status.status_code, 0)}
 
         if status.description:
             otlp_status["message"] = status.description
@@ -257,7 +263,9 @@ class GenerationBatchingProcessor(SpanProcessor):
 
         return otlp_event
 
-    def flush_generation(self, generation_id: str, service_name: str = "cursor-agent") -> bool:
+    def flush_generation(
+        self, generation_id: str, service_name: str = "cursor-agent"
+    ) -> bool:
         """
         Flush all spans for a given generation_id to the exporter.
 
@@ -275,13 +283,13 @@ class GenerationBatchingProcessor(SpanProcessor):
             return True
 
         try:
-            logger.info(f"Flushing spans for generation {generation_id}")
+            logger.info(f"Flushing batch for generation: {generation_id[:16]}...")
 
             # Read all spans from file
             spans_data = []
             resource_attrs = {}
 
-            with open(span_file, 'r', encoding='utf-8') as f:
+            with open(span_file, "r", encoding="utf-8") as f:
                 # Acquire shared lock for reading
                 lock_file(f, exclusive=False)
                 try:
@@ -300,16 +308,18 @@ class GenerationBatchingProcessor(SpanProcessor):
                 span_file.unlink()
                 return True
 
-            logger.info(f"Loaded {len(spans_data)} spans for generation {generation_id}")
+            logger.info(f"Batch contains {len(spans_data)} spans from {span_file}")
 
             # Build complete OTLP JSON payload
-            otlp_payload = self._build_otlp_payload(spans_data, service_name, resource_attrs)
+            otlp_payload = self._build_otlp_payload(
+                spans_data, service_name, resource_attrs
+            )
 
             # Export via the exporter
             result = self._export_otlp_payload(otlp_payload)
 
             if result == SpanExportResult.SUCCESS:
-                logger.info(f"Successfully exported {len(spans_data)} spans for generation {generation_id}")
+                logger.info(f"Batch export successful: {len(spans_data)} spans")
 
                 # Delete the temporary file unless debug mode is enabled
                 if self.debug:
@@ -324,17 +334,18 @@ class GenerationBatchingProcessor(SpanProcessor):
                 return False
 
         except Exception as e:
-            logger.error(f"Error flushing generation {generation_id}: {e}", exc_info=True)
+            logger.error(
+                f"Error flushing generation {generation_id}: {e}", exc_info=True
+            )
             return False
 
-    def _build_otlp_payload(self, spans: list, service_name: str, resource_attrs: dict) -> dict:
+    def _build_otlp_payload(
+        self, spans: list, service_name: str, resource_attrs: dict
+    ) -> dict:
         """Build a complete OTLP JSON payload from stored spans."""
         # Merge resource attributes with service name
         resource_attributes = [
-            {
-                "key": "service.name",
-                "value": {"stringValue": service_name}
-            }
+            {"key": "service.name", "value": {"stringValue": service_name}}
         ]
 
         # Add any other resource attributes
@@ -354,17 +365,14 @@ class GenerationBatchingProcessor(SpanProcessor):
                 resource_attributes.append(attr)
 
         return {
-            "resourceSpans": [{
-                "resource": {
-                    "attributes": resource_attributes
-                },
-                "scopeSpans": [{
-                    "scope": {
-                        "name": "cursor_otel_hook"
-                    },
-                    "spans": spans
-                }]
-            }]
+            "resourceSpans": [
+                {
+                    "resource": {"attributes": resource_attributes},
+                    "scopeSpans": [
+                        {"scope": {"name": "cursor_otel_hook"}, "spans": spans}
+                    ],
+                }
+            ]
         }
 
     def _export_otlp_payload(self, otlp_payload: dict) -> SpanExportResult:
@@ -374,11 +382,13 @@ class GenerationBatchingProcessor(SpanProcessor):
         This works with our custom JSON exporter that has export_otlp_json method.
         """
         # Check if exporter supports direct OTLP JSON export
-        if hasattr(self.exporter, 'export_otlp_json'):
+        if hasattr(self.exporter, "export_otlp_json"):
             return self.exporter.export_otlp_json(otlp_payload)
 
         # Otherwise, log the payload for debugging
-        logger.warning("Exporter doesn't support export_otlp_json. Cannot export batched spans.")
+        logger.warning(
+            "Exporter doesn't support export_otlp_json. Cannot export batched spans."
+        )
         logger.debug(f"OTLP payload: {json.dumps(otlp_payload, indent=2)}")
 
         return SpanExportResult.FAILURE
@@ -405,7 +415,9 @@ class GenerationBatchingProcessor(SpanProcessor):
         Force flush is not supported in batching mode.
         Spans are only flushed when 'stop' event is received.
         """
-        logger.debug("force_flush called but batching processor only flushes on 'stop' event")
+        logger.debug(
+            "force_flush called but batching processor only flushes on 'stop' event"
+        )
         return True
 
     def _cleanup_old_files(self) -> None:
