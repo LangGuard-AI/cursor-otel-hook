@@ -167,6 +167,24 @@ if [ ! -f "$HOOKS_CONFIG" ]; then
         "command": "$WRAPPER_SCRIPT",
         "timeout": 5
       }
+    ],
+    "subagentStart": [
+      {
+        "command": "$WRAPPER_SCRIPT",
+        "timeout": 5
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": "$WRAPPER_SCRIPT",
+        "timeout": 5
+      }
+    ],
+    "stop": [
+      {
+        "command": "$WRAPPER_SCRIPT",
+        "timeout": 5
+      }
     ]
   }
 }

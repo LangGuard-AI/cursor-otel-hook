@@ -208,6 +208,24 @@ if (!(Test-Path $hooksConfig)) {
         "command": "$escapedWrapperScript",
         "timeout": 5
       }
+    ],
+    "subagentStart": [
+      {
+        "command": "$escapedWrapperScript",
+        "timeout": 5
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": "$escapedWrapperScript",
+        "timeout": 5
+      }
+    ],
+    "stop": [
+      {
+        "command": "$escapedWrapperScript",
+        "timeout": 5
+      }
     ]
   }
 }

@@ -19,6 +19,8 @@ An easy-to-deploy Python-based OpenTelemetry integration for Cursor IDE that cap
   - Context compaction events
   - Subagent activities
 
+- **Generation-based Batching**: When using HTTP/JSON protocol, spans are automatically batched by generation_id and sent as a single payload when the 'stop' event is received. This provides better trace coherence and reduces network overhead.
+
 - **Custom JSON Exporter**: Includes a custom OTLP/JSON exporter for platforms that require JSON format
 - **Privacy Controls**: Built-in data masking to protect sensitive user information
 - **Flexible Configuration**: Support for both environment variables and JSON config files
@@ -193,8 +195,10 @@ This hook uses **LangSmith/LangChain OpenTelemetry conventions** for maximum com
 #### Common Attributes (All Spans)
 
 **Session & Trace IDs (LangSmith convention):**
-- `langsmith.trace.session_id`: Conversation identifier
-- `langsmith.trace.id`: Generation identifier
+- `langsmith.trace.session_id`: Conversation identifier (from Cursor's conversation_id)
+- `langsmith.trace.id`: OpenTelemetry trace ID (derived from span context, not generation_id)
+- `langsmith.span.id`: OpenTelemetry span ID (derived from span context)
+- `langsmith.span.parent_id`: Parent span ID when applicable (derived from span context)
 
 **Model Information (GenAI convention):**
 - `gen_ai.system`: Provider name (anthropic, openai, cursor)
@@ -207,6 +211,7 @@ This hook uses **LangSmith/LangChain OpenTelemetry conventions** for maximum com
 
 **Metadata:**
 - `langsmith.metadata.hook_event`: Original Cursor hook event name
+- `langsmith.metadata.generation_id`: Cursor's generation identifier (preserved as metadata)
 - `langsmith.metadata.cursor_version`: Cursor IDE version
 - `langsmith.metadata.user_email`: User email (can be masked)
 - `langsmith.metadata.workspace_roots`: Project directories
@@ -247,6 +252,66 @@ This hook uses **LangSmith/LangChain OpenTelemetry conventions** for maximum com
 - `langsmith.metadata.subagent_type`: Type of subagent
 - `langsmith.metadata.subagent_task`: Task description
 
+## Generation-based Span Batching
+
+When using the `http/json` protocol, the hook automatically implements generation-based batching to improve trace coherence and reduce network overhead.
+
+### How It Works
+
+1. **Span Storage**: As each hook event is processed, spans are converted to OTLP JSON format and stored in temporary files, grouped by `generation_id`.
+
+2. **Temporary Files**: Spans are stored in `{temp_dir}/cursor_otel_spans/{generation_id}.jsonl`, where each line is a JSON-formatted span.
+
+3. **Batched Export**: When a 'stop' hook event is received for a generation_id, all stored spans for that generation are:
+   - Read from the temporary file
+   - Combined into a single OTLP JSON payload
+   - Sent as one request to the OTEL receiver
+   - The temporary file is deleted after successful export
+
+4. **Automatic Cleanup**: Temporary files older than 24 hours are automatically removed to prevent disk accumulation.
+
+### Parent-Child Span Relationships
+
+The hook automatically maintains proper parent-child relationships between spans across process invocations:
+
+**Span Hierarchy:**
+- **Root Spans**: `sessionStart`, `beforeSubmitPrompt` (start new trace contexts)
+- **Session Children**: `subagentStart`, tool events (when not in subagent)
+- **Subagent Children**: Tool events during subagent execution
+- **Tool Children**: `postToolUse`, `postToolUseFailure`, `afterShellExecution`, `afterMCPExecution`, `afterFileEdit` (children of their corresponding start events)
+
+**Context Management:**
+Context is persisted across process invocations using temporary files (`{temp_dir}/cursor_otel_context/{generation_id}_context.json`):
+- Tracks current session span, subagent span, and tool span
+- Each hook event looks up its appropriate parent span
+- Proper parent span_id is set when creating child spans
+- Context is cleaned up after the 'stop' event
+
+**Example Trace Structure:**
+```
+sessionStart (root)
+├── subagentStart (child of session)
+│   ├── preToolUse: Read (child of subagent)
+│   │   └── postToolUse: Read (child of tool)
+│   ├── preToolUse: Edit (child of subagent)
+│   │   └── postToolUse: Edit (child of tool)
+│   └── subagentStop (child of subagent)
+└── stop (child of session)
+```
+
+### Benefits
+
+- **Better Trace Coherence**: All spans for a single generation are sent together, making it easier for trace backends to assemble complete traces
+- **Proper Parent-Child Relationships**: Spans correctly reference their parent spans, even across separate process invocations
+- **Reduced Network Overhead**: Instead of N individual requests (one per span), only one batched request is sent per generation
+- **Improved Reliability**: If a span export fails, it doesn't affect the storage of other spans
+- **Correct ID Derivation**: All spans maintain proper OpenTelemetry trace_id, span_id, and parent_span_id relationships
+
+### Requirements
+
+- Only available when using `OTEL_EXPORTER_OTLP_PROTOCOL="http/json"`
+- For other protocols (gRPC, http/protobuf), spans are sent immediately using standard BatchSpanProcessor (without cross-process parent-child relationships)
+
 ## Privacy and Security
 
 ### Data Masking
@@ -266,7 +331,7 @@ By default, the hook sends:
 - Model and tool names
 - Event types and status
 - File paths and commands (unless masked)
-- Conversation and generation IDs
+- Conversation IDs, generation IDs (as metadata), and OpenTelemetry trace/span IDs
 
 The hook **never** sends:
 - API keys or authentication tokens (automatically filtered)
@@ -348,7 +413,17 @@ Edit the wrapper script (`~/.cursor/hooks/otel_hook.sh`) to add `--debug`:
 exec cursor-otel-hook --config "/path/to/otel_config.json" --debug "$@"
 ```
 
-Debug mode logs detailed information and outputs to stderr (visible in Cursor).
+**Debug mode features:**
+- Logs detailed DEBUG-level information to the log file
+- Outputs logs to stderr (visible in Cursor)
+- Preserves temporary OTLP JSON files for inspection (when using http/json protocol)
+  - Span files: `{temp_dir}/cursor_otel_spans/{generation_id}.jsonl`
+  - Context files: `{temp_dir}/cursor_otel_context/{generation_id}_context.json`
+
+**Without debug mode:**
+- Only WARNING and ERROR messages are logged
+- No stderr output
+- Temporary files are automatically cleaned up after export
 
 ### Common Issues
 
