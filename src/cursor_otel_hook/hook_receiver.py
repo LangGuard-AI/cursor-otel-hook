@@ -26,6 +26,7 @@ from typing import Sequence
 
 from .config import OTELConfig
 from .privacy import mask_sensitive_data
+from .context_manager import generate_session_trace_id
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -306,7 +307,13 @@ class CursorHookProcessor:
             )
 
         # Create span with or without parent context
-        span = self._create_span_with_context(span_name, parent_context)
+        span = self._create_span_with_context(
+            span_name,
+            parent_context,
+            conversation_id=conversation_id,
+            hook_event=hook_event,
+            generation_id=generation_id,
+        )
 
         # Log span creation with trace_id
         ctx = span.get_span_context()
@@ -366,23 +373,74 @@ class CursorHookProcessor:
                     )
 
     def _create_span_with_context(
-        self, span_name: str, parent_context: Optional[Dict[str, Any]] = None
+        self,
+        span_name: str,
+        parent_context: Optional[Dict[str, Any]] = None,
+        conversation_id: Optional[str] = None,
+        hook_event: Optional[str] = None,
+        generation_id: Optional[str] = None,
     ) -> trace.Span:
         """
         Create a span with explicit parent context.
 
         If parent_context is provided, creates the span as a child of that context.
         Otherwise, creates a new root span.
+
+        For sessionStart events, generates a deterministic trace_id from conversation_id.
+        For other events, uses the stored session trace_id if available.
         """
+        from opentelemetry.trace import SpanContext, TraceFlags
+        from opentelemetry import context as otel_context
+        import random
+
         if parent_context is None:
-            # Create root span
+            # For sessionStart, generate deterministic trace_id from conversation_id
+            if (
+                hook_event == "sessionStart"
+                and conversation_id
+                and conversation_id != "unknown"
+            ):
+                session_trace_id = generate_session_trace_id(conversation_id)
+
+                # Generate a new span_id
+                span_id = random.getrandbits(64)
+
+                # Create SpanContext with our deterministic trace_id
+                span_context = SpanContext(
+                    trace_id=session_trace_id,
+                    span_id=span_id,
+                    is_remote=False,
+                    trace_flags=TraceFlags(0x01),
+                )
+
+                # Create context and start span
+                ctx = trace.set_span_in_context(trace.NonRecordingSpan(span_context))
+                return self.tracer.start_span(span_name, context=ctx)
+
+            # Fallback for non-sessionStart root spans
             return self.tracer.start_span(span_name)
 
-        # Create span with explicit parent
-        from opentelemetry.trace import SpanContext, TraceFlags, Link
-        from opentelemetry import context as otel_context
+        # For child spans, use session trace_id if available
+        if generation_id and generation_id != "unknown" and self.context_manager:
+            session_trace_id = self.context_manager.get_session_trace_id(generation_id)
+            if session_trace_id:
+                # Use session trace_id with parent's span_id
+                parent_span_context = SpanContext(
+                    trace_id=session_trace_id,  # Use session trace_id
+                    span_id=parent_context["span_id"],
+                    is_remote=True,
+                    trace_flags=TraceFlags(0x01),
+                )
 
-        # Create parent SpanContext
+                # Create a context with this parent
+                ctx = trace.set_span_in_context(
+                    trace.NonRecordingSpan(parent_span_context)
+                )
+
+                # Start span with this parent context
+                return self.tracer.start_span(span_name, context=ctx)
+
+        # Fallback: use parent_context as-is
         parent_span_context = SpanContext(
             trace_id=parent_context["trace_id"],
             span_id=parent_context["span_id"],

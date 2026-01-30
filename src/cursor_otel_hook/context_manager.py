@@ -6,6 +6,7 @@ trace context (trace_id, span_id) to a file so child spans can reference
 their parent spans correctly.
 """
 
+import hashlib
 import json
 import logging
 import sys
@@ -16,14 +17,36 @@ import time
 
 logger = logging.getLogger(__name__)
 
+
+def generate_session_trace_id(conversation_id: str) -> int:
+    """
+    Generate deterministic 128-bit trace_id from conversation_id.
+
+    Uses SHA256 hash of conversation_id, taking first 16 bytes (128 bits)
+    and converting to integer for OTEL SpanContext compatibility.
+
+    Args:
+        conversation_id: The conversation ID string
+
+    Returns:
+        128-bit integer trace_id (formats to 32 hex characters)
+    """
+    hash_bytes = hashlib.sha256(conversation_id.encode("utf-8")).digest()
+    # Take first 16 bytes (128 bits) for OTEL trace_id
+    trace_id = int.from_bytes(hash_bytes[:16], byteorder="big")
+    return trace_id
+
+
 # Platform-specific file locking (same as batching_processor)
-if sys.platform == 'win32':
+if sys.platform == "win32":
     import msvcrt
 
     def lock_file(file_handle, exclusive=True):
         """Lock file on Windows using msvcrt."""
         try:
-            msvcrt.locking(file_handle.fileno(), msvcrt.LK_LOCK if exclusive else msvcrt.LK_LOCK, 1)
+            msvcrt.locking(
+                file_handle.fileno(), msvcrt.LK_LOCK if exclusive else msvcrt.LK_LOCK, 1
+            )
         except IOError:
             pass
 
@@ -68,13 +91,17 @@ class GenerationContextManager:
             self.storage_dir = storage_dir
 
         self.storage_dir.mkdir(parents=True, exist_ok=True)
-        logger.debug(f"GenerationContextManager initialized with storage: {self.storage_dir}")
+        logger.debug(
+            f"GenerationContextManager initialized with storage: {self.storage_dir}"
+        )
 
     def get_context_file(self, generation_id: str) -> Path:
         """Get the context file path for a generation."""
         return self.storage_dir / f"{generation_id}_context.json"
 
-    def get_parent_context(self, generation_id: str, hook_event: str) -> Optional[Dict[str, Any]]:
+    def get_parent_context(
+        self, generation_id: str, hook_event: str
+    ) -> Optional[Dict[str, Any]]:
         """
         Get the parent span context for this hook event.
 
@@ -84,11 +111,13 @@ class GenerationContextManager:
         context_file = self.get_context_file(generation_id)
 
         if not context_file.exists():
-            logger.debug(f"No context file for generation {generation_id}, creating root span")
+            logger.debug(
+                f"No context file for generation {generation_id}, creating root span"
+            )
             return None
 
         try:
-            with open(context_file, 'r', encoding='utf-8') as f:
+            with open(context_file, "r", encoding="utf-8") as f:
                 lock_file(f, exclusive=False)
                 try:
                     context = json.load(f)
@@ -109,7 +138,35 @@ class GenerationContextManager:
             logger.error(f"Error reading context file: {e}", exc_info=True)
             return None
 
-    def _determine_parent(self, context: Dict[str, Any], hook_event: str) -> Optional[Dict[str, Any]]:
+    def get_session_trace_id(self, generation_id: str) -> Optional[int]:
+        """
+        Get the session-level trace_id for a generation.
+
+        Returns:
+            The session trace_id as integer, or None if not found
+        """
+        context_file = self.get_context_file(generation_id)
+
+        if not context_file.exists():
+            return None
+
+        try:
+            with open(context_file, "r", encoding="utf-8") as f:
+                lock_file(f, exclusive=False)
+                try:
+                    context = json.load(f)
+                finally:
+                    unlock_file(f)
+
+            return context.get("session_trace_id")
+
+        except Exception as e:
+            logger.error(f"Error reading session trace_id: {e}", exc_info=True)
+            return None
+
+    def _determine_parent(
+        self, context: Dict[str, Any], hook_event: str
+    ) -> Optional[Dict[str, Any]]:
         """
         Determine the appropriate parent span based on event type and context.
 
@@ -120,7 +177,7 @@ class GenerationContextManager:
         - Child of tool: postToolUse, postToolUseFailure (follow preToolUse)
         """
         # Events that should be root spans (no parent)
-        root_events = {"sessionStart", "beforeSubmitPrompt"}
+        root_events = {"sessionStart"}
         if hook_event in root_events:
             return None
 
@@ -130,12 +187,17 @@ class GenerationContextManager:
         current_tool = context.get("current_tool_span")
 
         # Tool completion events should be children of the tool start
-        if hook_event in {"postToolUse", "postToolUseFailure", "afterShellExecution",
-                          "afterMCPExecution", "afterFileEdit"}:
+        if hook_event in {
+            "postToolUse",
+            "postToolUseFailure",
+            "afterShellExecution",
+            "afterMCPExecution",
+            "afterFileEdit",
+        }:
             if current_tool:
                 return {
                     "trace_id": current_tool["trace_id"],
-                    "span_id": current_tool["span_id"]
+                    "span_id": current_tool["span_id"],
                 }
 
         # Subagent events should be children of the session
@@ -143,33 +205,37 @@ class GenerationContextManager:
             if current_session:
                 return {
                     "trace_id": current_session["trace_id"],
-                    "span_id": current_session["span_id"]
+                    "span_id": current_session["span_id"],
                 }
 
         # Tool start events should be children of subagent if in subagent, else session
-        if hook_event in {"preToolUse", "beforeShellExecution", "beforeMCPExecution",
-                          "beforeReadFile"}:
+        if hook_event in {
+            "preToolUse",
+            "beforeShellExecution",
+            "beforeMCPExecution",
+            "beforeReadFile",
+        }:
             if current_subagent:
                 return {
                     "trace_id": current_subagent["trace_id"],
-                    "span_id": current_subagent["span_id"]
+                    "span_id": current_subagent["span_id"],
                 }
             elif current_session:
                 return {
                     "trace_id": current_session["trace_id"],
-                    "span_id": current_session["span_id"]
+                    "span_id": current_session["span_id"],
                 }
 
         # Other events should be children of subagent if active, else session
         if current_subagent:
             return {
                 "trace_id": current_subagent["trace_id"],
-                "span_id": current_subagent["span_id"]
+                "span_id": current_subagent["span_id"],
             }
         elif current_session:
             return {
                 "trace_id": current_session["trace_id"],
-                "span_id": current_session["span_id"]
+                "span_id": current_session["span_id"],
             }
 
         return None
@@ -196,7 +262,7 @@ class GenerationContextManager:
         context = {}
         if context_file.exists():
             try:
-                with open(context_file, 'r', encoding='utf-8') as f:
+                with open(context_file, "r", encoding="utf-8") as f:
                     lock_file(f, exclusive=False)
                     try:
                         context = json.load(f)
@@ -210,7 +276,7 @@ class GenerationContextManager:
             "trace_id": trace_id,
             "span_id": span_id,
             "hook_event": hook_event,
-            "timestamp": time.time()
+            "timestamp": time.time(),
         }
 
         # Track different span types
@@ -218,6 +284,7 @@ class GenerationContextManager:
             context["current_session_span"] = span_info
             context["current_subagent_span"] = None
             context["current_tool_span"] = None
+            context["session_trace_id"] = trace_id
 
         elif hook_event == "sessionEnd":
             # Clear all context on session end
@@ -231,24 +298,27 @@ class GenerationContextManager:
             context["current_subagent_span"] = None
             context["current_tool_span"] = None
 
-        elif hook_event in {"preToolUse", "beforeShellExecution", "beforeMCPExecution",
-                            "beforeReadFile"}:
+        elif hook_event in {
+            "preToolUse",
+            "beforeShellExecution",
+            "beforeMCPExecution",
+            "beforeReadFile",
+        }:
             context["current_tool_span"] = span_info
 
-        elif hook_event in {"postToolUse", "postToolUseFailure", "afterShellExecution",
-                            "afterMCPExecution", "afterFileEdit"}:
+        elif hook_event in {
+            "postToolUse",
+            "postToolUseFailure",
+            "afterShellExecution",
+            "afterMCPExecution",
+            "afterFileEdit",
+        }:
             # Clear tool span after completion
-            context["current_tool_span"] = None
-
-        elif hook_event == "beforeSubmitPrompt":
-            # New prompt submission can be a new root
-            context["current_session_span"] = span_info
-            context["current_subagent_span"] = None
             context["current_tool_span"] = None
 
         # Write updated context
         try:
-            with open(context_file, 'w', encoding='utf-8') as f:
+            with open(context_file, "w", encoding="utf-8") as f:
                 lock_file(f, exclusive=True)
                 try:
                     json.dump(context, f, indent=2)
@@ -256,7 +326,9 @@ class GenerationContextManager:
                 finally:
                     unlock_file(f)
 
-            logger.debug(f"Saved context for {hook_event}: span_id={format(span_id, '016x')}")
+            logger.debug(
+                f"Saved context for {hook_event}: span_id={format(span_id, '016x')}"
+            )
 
         except Exception as e:
             logger.error(f"Error saving context: {e}", exc_info=True)
