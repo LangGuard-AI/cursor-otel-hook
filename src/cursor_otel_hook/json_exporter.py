@@ -65,8 +65,9 @@ class OTLPJSONSpanExporter(SpanExporter):
             # Convert spans to OTLP JSON format
             otlp_json = self._encode_spans(spans)
 
-            # Send to endpoint
+            # Log the complete OTLP trace payload
             logger.debug(f"Sending {len(spans)} spans to {self.endpoint}")
+            logger.debug(f"Complete OTLP JSON trace payload:\n{json.dumps(otlp_json, indent=2)}")
 
             try:
                 resp = self.session.post(

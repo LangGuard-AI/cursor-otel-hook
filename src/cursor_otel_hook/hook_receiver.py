@@ -14,10 +14,11 @@ import argparse
 from pathlib import Path
 
 from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace import TracerProvider, ReadableSpan
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter, SpanExportResult
 from opentelemetry.sdk.resources import Resource, SERVICE_NAME
 from opentelemetry.trace import Status, StatusCode
+from typing import Sequence
 
 from .config import OTELConfig
 from .privacy import mask_sensitive_data
@@ -25,6 +26,66 @@ from .privacy import mask_sensitive_data
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+
+class LoggingSpanExporterWrapper(SpanExporter):
+    """Wrapper that logs spans before exporting them."""
+
+    def __init__(self, exporter: SpanExporter):
+        self.exporter = exporter
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        """Log spans and then export them."""
+        # Log complete span information
+        logger.debug(f"Exporting {len(spans)} spans")
+        for i, span in enumerate(spans):
+            span_dict = self._span_to_dict(span)
+            logger.debug(f"Span {i+1}/{len(spans)}:\n{json.dumps(span_dict, indent=2, default=str)}")
+
+        # Export via wrapped exporter
+        return self.exporter.export(spans)
+
+    def _span_to_dict(self, span: ReadableSpan) -> Dict[str, Any]:
+        """Convert a ReadableSpan to a dictionary for logging."""
+        ctx = span.get_span_context()
+
+        result = {
+            "name": span.name,
+            "context": {
+                "trace_id": format(ctx.trace_id, '032x'),
+                "span_id": format(ctx.span_id, '016x'),
+                "trace_flags": ctx.trace_flags,
+            },
+            "parent": {
+                "span_id": format(span.parent.span_id, '016x')
+            } if span.parent else None,
+            "start_time": span.start_time,
+            "end_time": span.end_time,
+            "attributes": dict(span.attributes) if span.attributes else {},
+            "events": [
+                {
+                    "name": event.name,
+                    "timestamp": event.timestamp,
+                    "attributes": dict(event.attributes) if event.attributes else {}
+                }
+                for event in (span.events or [])
+            ],
+            "status": {
+                "status_code": span.status.status_code.name if span.status else None,
+                "description": span.status.description if span.status else None,
+            },
+            "kind": span.kind.name if span.kind else None,
+        }
+
+        return result
+
+    def shutdown(self):
+        """Shutdown the wrapped exporter."""
+        return self.exporter.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        """Force flush the wrapped exporter."""
+        return self.exporter.force_flush(timeout_millis)
 
 
 class CursorHookProcessor:
@@ -70,8 +131,11 @@ class CursorHookProcessor:
             )
             logger.info("Custom JSON exporter initialized successfully")
 
+            # Wrap with logging exporter
+            wrapped_exporter = LoggingSpanExporterWrapper(otlp_exporter)
+
             # Add span processor and return tracer
-            span_processor = BatchSpanProcessor(otlp_exporter)
+            span_processor = BatchSpanProcessor(wrapped_exporter)
             provider.add_span_processor(span_processor)
             trace.set_tracer_provider(provider)
             return trace.get_tracer(__name__)
@@ -101,8 +165,11 @@ class CursorHookProcessor:
             logger.error(f"Failed to initialize OTLP exporter: {e}")
             raise
 
+        # Wrap with logging exporter
+        wrapped_exporter = LoggingSpanExporterWrapper(otlp_exporter)
+
         # Add span processor
-        span_processor = BatchSpanProcessor(otlp_exporter)
+        span_processor = BatchSpanProcessor(wrapped_exporter)
         provider.add_span_processor(span_processor)
 
         # Set as global tracer provider
