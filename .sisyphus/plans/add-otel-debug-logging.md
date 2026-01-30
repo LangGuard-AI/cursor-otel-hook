@@ -428,10 +428,10 @@ INFO - Flush complete: 3 spans exported in 52ms
 ```
 
 ### Final Checklist
-- [ ] Default log level is INFO (not WARNING)
-- [ ] Config summary logged on startup
-- [ ] Each span creation/completion logged
-- [ ] Export attempts logged with URL
-- [ ] Export results logged with status code and timing
-- [ ] Temp file operations logged (batching mode)
-- [ ] No sensitive data in INFO logs
+- [x] Default log level is INFO (not WARNING)
+- [x] Config summary logged on startup
+- [x] Each span creation/completion logged
+- [x] Export attempts logged with URL
+- [x] Export results logged with status code and timing
+- [x] Temp file operations logged (batching mode)
+- [x] No sensitive data in INFO logs
