@@ -131,6 +131,8 @@ class CursorHookProcessor:
         self.span_processor = None  # Will be set by _setup_tracer
         self.context_manager = None  # Will be set for batching mode
         self.tracer = self._setup_tracer()
+        # Check endpoint connectivity (non-blocking warning only)
+        self._check_endpoint_connectivity()
 
     def _setup_tracer(self) -> trace.Tracer:
         """Initialize OpenTelemetry tracer with OTLP exporter"""
@@ -240,6 +242,27 @@ class CursorHookProcessor:
         trace.set_tracer_provider(provider)
 
         return trace.get_tracer(__name__)
+
+    def _check_endpoint_connectivity(self) -> bool:
+        """
+        Quick connectivity check to endpoint (non-blocking warning only).
+
+        Performs a HEAD request to the endpoint with a 2-second timeout.
+        Logs INFO if reachable, WARNING if unreachable. Does not fail startup.
+
+        Returns:
+            True if endpoint is reachable, False otherwise
+        """
+        try:
+            import urllib.request
+
+            req = urllib.request.Request(self.config.endpoint, method="HEAD")
+            urllib.request.urlopen(req, timeout=2)
+            logger.info(f"Endpoint reachable: {self.config.endpoint}")
+            return True
+        except Exception as e:
+            logger.warning(f"Endpoint may be unreachable: {self.config.endpoint} ({e})")
+            return False
 
     def process_hook(self, hook_data: Dict[str, Any]) -> Dict[str, Any]:
         """
