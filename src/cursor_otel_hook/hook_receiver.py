@@ -87,14 +87,42 @@ class LoggingSpanExporterWrapper(SpanExporter):
         """Force flush the wrapped exporter."""
         return self.exporter.force_flush(timeout_millis)
 
+    def export_otlp_json(self, otlp_payload: Dict[str, Any]) -> SpanExportResult:
+        """
+        Export pre-formatted OTLP JSON payload (pass-through to wrapped exporter).
+
+        This method is used by GenerationBatchingProcessor to send batched spans.
+        """
+        logger.debug(f"Exporting batched OTLP JSON payload")
+        logger.debug(f"Payload keys: {list(otlp_payload.keys())}")
+
+        # Count spans for logging
+        span_count = sum(
+            len(scope_span.get("spans", []))
+            for rs in otlp_payload.get("resourceSpans", [])
+            for scope_span in rs.get("scopeSpans", [])
+        )
+        logger.debug(f"Batched payload contains {span_count} spans")
+
+        # Pass through to wrapped exporter
+        if hasattr(self.exporter, 'export_otlp_json'):
+            return self.exporter.export_otlp_json(otlp_payload)
+        else:
+            logger.error("Wrapped exporter doesn't support export_otlp_json")
+            return SpanExportResult.FAILURE
+
 
 class CursorHookProcessor:
     """Processes Cursor hooks and creates OTEL traces"""
 
-    def __init__(self, config: OTELConfig):
+    def __init__(self, config: OTELConfig, debug: bool = False):
         self.config = config
+        self.debug = debug
         logger.info(f"Initializing CursorHookProcessor with endpoint: {config.endpoint}")
         logger.info(f"Protocol: {config.protocol}, Service: {config.service_name}")
+        logger.info(f"Debug mode: {debug}")
+        self.span_processor = None  # Will be set by _setup_tracer
+        self.context_manager = None  # Will be set for batching mode
         self.tracer = self._setup_tracer()
 
     def _setup_tracer(self) -> trace.Tracer:
@@ -120,8 +148,10 @@ class CursorHookProcessor:
         if self.config.protocol == "http/json":
             # Use custom JSON HTTP exporter
             from .json_exporter import OTLPJSONSpanExporter
+            from .batching_processor import GenerationBatchingProcessor
+            from .context_manager import GenerationContextManager
 
-            logger.info("Using custom HTTP OTLP exporter (JSON format)")
+            logger.info("Using custom HTTP OTLP exporter (JSON format) with generation batching")
 
             otlp_exporter = OTLPJSONSpanExporter(
                 endpoint=self.config.endpoint,
@@ -134,8 +164,15 @@ class CursorHookProcessor:
             # Wrap with logging exporter
             wrapped_exporter = LoggingSpanExporterWrapper(otlp_exporter)
 
-            # Add span processor and return tracer
-            span_processor = BatchSpanProcessor(wrapped_exporter)
+            # Use GenerationBatchingProcessor instead of BatchSpanProcessor
+            # Pass debug flag to preserve files in debug mode
+            span_processor = GenerationBatchingProcessor(wrapped_exporter, debug=self.debug)
+            self.span_processor = span_processor  # Store reference for flushing
+
+            # Initialize context manager for cross-process parent-child relationships
+            self.context_manager = GenerationContextManager()
+            logger.info("Context manager initialized for span relationships")
+
             provider.add_span_processor(span_processor)
             trace.set_tracer_provider(provider)
             return trace.get_tracer(__name__)
@@ -187,13 +224,31 @@ class CursorHookProcessor:
         conversation_id = hook_data.get("conversation_id", "unknown")
         generation_id = hook_data.get("generation_id", "unknown")
 
+        # Check if this is a 'stop' event - if so, flush the generation
+        if hook_event == "stop" and generation_id != "unknown":
+            logger.info(f"Stop event detected for generation {generation_id}, flushing spans")
+            if self.span_processor and hasattr(self.span_processor, 'flush_generation'):
+                self.span_processor.flush_generation(generation_id, self.config.service_name)
+            # Cleanup context after flushing
+            if self.context_manager:
+                self.context_manager.cleanup_context(generation_id)
+            # Note: We still create a span for the stop event itself
+
         # Create span name based on hook event
         span_name = f"cursor.{hook_event}"
 
         # Start timing
         start_time = time.time()
 
-        with self.tracer.start_as_current_span(span_name) as span:
+        # Get parent context if context manager is enabled
+        parent_context = None
+        if self.context_manager and generation_id != "unknown":
+            parent_context = self.context_manager.get_parent_context(generation_id, hook_event)
+
+        # Create span with or without parent context
+        span = self._create_span_with_context(span_name, parent_context)
+
+        with span:
             try:
                 # Add common attributes
                 self._add_common_attributes(span, hook_data)
@@ -226,14 +281,73 @@ class CursorHookProcessor:
                 duration = time.time() - start_time
                 span.set_attribute("langsmith.metadata.duration_ms", duration * 1000)
 
+                # Save span context for future spans to use as parent
+                if self.context_manager and generation_id != "unknown":
+                    ctx = span.get_span_context()
+                    self.context_manager.save_span_context(
+                        generation_id=generation_id,
+                        hook_event=hook_event,
+                        trace_id=ctx.trace_id,
+                        span_id=ctx.span_id,
+                    )
+
+    def _create_span_with_context(
+        self,
+        span_name: str,
+        parent_context: Optional[Dict[str, Any]] = None
+    ) -> trace.Span:
+        """
+        Create a span with explicit parent context.
+
+        If parent_context is provided, creates the span as a child of that context.
+        Otherwise, creates a new root span.
+        """
+        if parent_context is None:
+            # Create root span
+            return self.tracer.start_span(span_name)
+
+        # Create span with explicit parent
+        from opentelemetry.trace import SpanContext, TraceFlags, Link
+        from opentelemetry import context as otel_context
+
+        # Create parent SpanContext
+        parent_span_context = SpanContext(
+            trace_id=parent_context["trace_id"],
+            span_id=parent_context["span_id"],
+            is_remote=True,
+            trace_flags=TraceFlags(0x01),  # Sampled
+        )
+
+        # Create a context with this parent
+        ctx = trace.set_span_in_context(trace.NonRecordingSpan(parent_span_context))
+
+        # Start span with this parent context
+        return self.tracer.start_span(span_name, context=ctx)
+
     def _add_common_attributes(self, span: trace.Span, hook_data: Dict[str, Any]) -> None:
         """Add common attributes using LangSmith/GenAI conventions"""
 
+        # Get span context to access OTEL IDs
+        ctx = span.get_span_context()
+
         # Session and trace identifiers (LangSmith convention)
+        # IMPORTANT: Use actual OTEL trace_id, not generation_id
+        span.set_attribute("langsmith.trace.id", format(ctx.trace_id, '032x'))
+
+        # Add span ID derived from OTEL context
+        span.set_attribute("langsmith.span.id", format(ctx.span_id, '016x'))
+
+        # Add parent span ID if it exists
+        if span.parent:
+            span.set_attribute("langsmith.span.parent_id", format(span.parent.span_id, '016x'))
+
+        # Session ID comes from Cursor's conversation_id
         if "conversation_id" in hook_data:
             span.set_attribute("langsmith.trace.session_id", hook_data["conversation_id"])
+
+        # Preserve generation_id as metadata (not as trace ID)
         if "generation_id" in hook_data:
-            span.set_attribute("langsmith.trace.id", hook_data["generation_id"])
+            span.set_attribute("langsmith.metadata.generation_id", hook_data["generation_id"])
 
         # Model information (GenAI convention)
         if "model" in hook_data:
@@ -488,7 +602,8 @@ Examples:
     args = parser.parse_args()
 
     # Setup logging
-    log_level = logging.DEBUG if args.debug else logging.INFO
+    # Only show INFO and above when debug is off, DEBUG and above when on
+    log_level = logging.DEBUG if args.debug else logging.WARNING
     log_file = args.log_file
 
     # If no log file specified, use Cursor profile directory
@@ -521,8 +636,8 @@ Examples:
         logger.info(f"Configuration loaded successfully")
         logger.debug(f"Config details: {config}")
 
-        # Create processor
-        processor = CursorHookProcessor(config)
+        # Create processor with debug flag
+        processor = CursorHookProcessor(config, debug=args.debug)
 
         # Read hook data from stdin
         logger.debug("Reading hook data from stdin")

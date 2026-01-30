@@ -249,3 +249,57 @@ class OTLPJSONSpanExporter(SpanExporter):
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         """Nothing is buffered in this exporter, so this method does nothing."""
         return True
+
+    def export_otlp_json(self, otlp_payload: Dict[str, Any]) -> SpanExportResult:
+        """
+        Export a pre-formatted OTLP JSON payload.
+
+        This method is used by the GenerationBatchingProcessor to send
+        batched spans that are already in OTLP JSON format.
+
+        Args:
+            otlp_payload: Complete OTLP JSON payload with resourceSpans
+
+        Returns:
+            SpanExportResult indicating success or failure
+        """
+        if self._shutdown:
+            logger.warning("Exporter already shutdown, ignoring batch")
+            return SpanExportResult.FAILURE
+
+        try:
+            logger.debug(f"Sending batched OTLP JSON payload to {self.endpoint}")
+            logger.debug(f"Payload: {json.dumps(otlp_payload, indent=2)}")
+
+            try:
+                resp = self.session.post(
+                    url=self.endpoint,
+                    json=otlp_payload,
+                    timeout=self.timeout,
+                )
+            except ConnectionError:
+                # Retry once on connection error
+                logger.warning("Connection error, retrying...")
+                resp = self.session.post(
+                    url=self.endpoint,
+                    json=otlp_payload,
+                    timeout=self.timeout,
+                )
+
+            if resp.ok:
+                span_count = sum(
+                    len(scope_span.get("spans", []))
+                    for rs in otlp_payload.get("resourceSpans", [])
+                    for scope_span in rs.get("scopeSpans", [])
+                )
+                logger.info(f"Successfully exported batched payload with {span_count} spans")
+                return SpanExportResult.SUCCESS
+            else:
+                logger.error(
+                    f"Failed to export batched spans: {resp.status_code} - {resp.text}"
+                )
+                return SpanExportResult.FAILURE
+
+        except Exception as e:
+            logger.error(f"Error exporting batched spans: {e}", exc_info=True)
+            return SpanExportResult.FAILURE
