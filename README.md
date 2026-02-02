@@ -2,6 +2,8 @@
 
 An easy-to-deploy Python-based OpenTelemetry integration for Cursor IDE that captures agent activity and exports detailed traces to any OTEL-compliant receiver.
 
+Developed for use with [LangGuard.AI's AI Control Plane](https://langguard.ai)
+
 ## Features
 
 - **LangGuard/LangSmith/LangChain Compatible**: Uses official GenAI semantic conventions and LangSmith attribute mappings for seamless integration with:
