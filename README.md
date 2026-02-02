@@ -444,7 +444,6 @@ exec cursor-otel-hook --config "/path/to/otel_config.json" --debug "$@"
 - For HTTP: Ensure endpoint URL is correct
 - Try switching protocols (gRPC ↔ HTTP)
 
-**For detailed troubleshooting, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md)**
 
 ## Customization
 
@@ -533,14 +532,18 @@ cursor_otel_hook/
 ├── src/
 │   └── cursor_otel_hook/
 │       ├── __init__.py
-│       ├── config.py          # Configuration management
-│       ├── hook_receiver.py   # Main hook processor
-│       └── privacy.py         # Data masking utilities
-├── setup.sh                   # Unix/macOS setup script
-├── setup.ps1                  # Windows setup script
-├── pyproject.toml            # Project metadata
-├── requirements.txt          # Dependencies
-└── README.md                 # This file
+│       ├── __main__.py           # CLI entry point
+│       ├── batching_processor.py # Generation-based span batching
+│       ├── config.py             # Configuration management
+│       ├── context_manager.py    # Cross-process span context
+│       ├── hook_receiver.py      # Main hook processor
+│       ├── json_exporter.py      # Custom OTLP/JSON exporter
+│       └── privacy.py            # Data masking utilities
+├── setup.sh                      # Unix/macOS setup script
+├── setup.ps1                     # Windows setup script
+├── pyproject.toml                # Project metadata
+├── requirements.txt              # Dependencies
+└── README.md                     # This file
 ```
 
 ## Contributing
