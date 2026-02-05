@@ -1,0 +1,34 @@
+#!/bin/bash
+# Pre-installation script for Cursor OTEL Hook
+# Runs as root before files are installed
+
+set -e
+
+INSTALL_DIR="/Library/Application Support/CursorOtelHook"
+LAUNCHAGENT_PLIST="com.langguard.cursor-otel-hook-setup.plist"
+
+echo "Pre-install: Cursor OTEL Hook"
+
+# Unload LaunchAgent for all users if it exists
+if [ -f "/Library/LaunchAgents/$LAUNCHAGENT_PLIST" ]; then
+    echo "Unloading existing LaunchAgent..."
+    for USER_HOME in /Users/*; do
+        if [ -d "$USER_HOME" ] && [ "$(basename "$USER_HOME")" != "Shared" ]; then
+            USER_NAME=$(basename "$USER_HOME")
+            USER_ID=$(id -u "$USER_NAME" 2>/dev/null || continue)
+
+            if [ "$USER_ID" -ge 500 ]; then
+                launchctl bootout "gui/$USER_ID" "/Library/LaunchAgents/$LAUNCHAGENT_PLIST" 2>/dev/null || true
+            fi
+        fi
+    done
+fi
+
+# Remove old installation if exists
+if [ -d "$INSTALL_DIR" ]; then
+    echo "Removing previous installation..."
+    rm -rf "$INSTALL_DIR"
+fi
+
+echo "Pre-install complete"
+exit 0

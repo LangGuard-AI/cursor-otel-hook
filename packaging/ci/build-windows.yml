@@ -1,0 +1,108 @@
+name: Build Windows Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g., 1.0.0)'
+        required: false
+        default: ''
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install WiX Toolset
+        run: |
+          choco install wixtoolset -y --no-progress
+          echo "WiX installed"
+          # Add WiX to PATH
+          $wixPath = "${env:ProgramFiles(x86)}\WiX Toolset v3.14\bin"
+          if (Test-Path $wixPath) {
+            echo "$wixPath" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+
+      - name: Determine version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.event.inputs.version }}" -ne "") {
+            $version = "${{ github.event.inputs.version }}"
+          } elseif ("${{ github.ref_type }}" -eq "tag") {
+            $version = "${{ github.ref_name }}".TrimStart('v')
+          } elseif (Test-Path "VERSION") {
+            $version = (Get-Content VERSION -Raw).Trim()
+          } else {
+            $version = "0.1.0-dev"
+          }
+          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+          Set-Content -Path VERSION -Value $version -NoNewline
+          Write-Host "Building version: $version"
+
+      - name: Build PyInstaller executable
+        shell: pwsh
+        run: |
+          .\packaging\pyinstaller\build_windows.ps1
+
+      - name: Test executable
+        shell: pwsh
+        run: |
+          & ".\dist\windows\cursor-otel-hook.exe" --help
+          $size = [math]::Round((Get-Item ".\dist\windows\cursor-otel-hook.exe").Length / 1MB, 2)
+          Write-Host "Executable size: $size MB"
+
+      - name: Build MSI installer
+        shell: pwsh
+        run: |
+          .\packaging\windows\build_msi.ps1
+
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cursor-otel-hook-windows-${{ steps.version.outputs.VERSION }}
+          path: dist/windows/cursor-otel-hook-*.msi
+          retention-days: 30
+
+      - name: Upload standalone executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: cursor-otel-hook-windows-standalone-${{ steps.version.outputs.VERSION }}
+          path: dist/windows/cursor-otel-hook.exe
+          retention-days: 30
+
+  # Create release when tagged
+  release:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cursor-otel-hook-windows-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          draft: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

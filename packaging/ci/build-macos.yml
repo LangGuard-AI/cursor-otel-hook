@@ -1,0 +1,109 @@
+name: Build macOS Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g., 1.0.0)'
+        required: false
+        default: ''
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          elif [ "${{ github.ref_type }}" == "tag" ]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          elif [ -f "VERSION" ]; then
+            VERSION=$(cat VERSION)
+          else
+            VERSION="0.1.0-dev"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "$VERSION" > VERSION
+          echo "Building version: $VERSION"
+
+      - name: Build PyInstaller executable
+        run: |
+          chmod +x packaging/pyinstaller/build_macos.sh
+          ./packaging/pyinstaller/build_macos.sh
+
+      - name: Test executable
+        run: |
+          ./dist/macos/cursor-otel-hook --help || true
+          echo "Executable size: $(du -h dist/macos/cursor-otel-hook | cut -f1)"
+
+      - name: Build PKG installer
+        run: |
+          chmod +x packaging/macos/build_pkg.sh
+          ./packaging/macos/build_pkg.sh
+
+      - name: Upload PKG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cursor-otel-hook-macos-${{ steps.version.outputs.VERSION }}
+          path: dist/macos/cursor-otel-hook-*.pkg
+          retention-days: 30
+
+      - name: Upload standalone executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: cursor-otel-hook-macos-standalone-${{ steps.version.outputs.VERSION }}
+          path: dist/macos/cursor-otel-hook
+          retention-days: 30
+
+  # Optional: Build for both Intel and Apple Silicon
+  build-macos-universal:
+    runs-on: macos-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+
+    strategy:
+      matrix:
+        arch: [x86_64, arm64]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Determine version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "$VERSION" > VERSION
+
+      - name: Build for ${{ matrix.arch }}
+        run: |
+          # Note: Cross-compilation requires additional setup
+          # This is a placeholder for architecture-specific builds
+          chmod +x packaging/pyinstaller/build_macos.sh
+          ./packaging/pyinstaller/build_macos.sh
+
+      - name: Upload architecture-specific build
+        uses: actions/upload-artifact@v4
+        with:
+          name: cursor-otel-hook-macos-${{ matrix.arch }}-${{ steps.version.outputs.VERSION }}
+          path: dist/macos/cursor-otel-hook
+          retention-days: 30

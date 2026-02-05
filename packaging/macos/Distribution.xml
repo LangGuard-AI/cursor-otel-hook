@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>Cursor OTEL Hook</title>
+    <organization>com.langguard</organization>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+
+    <options customize="never" require-scripts="true" hostArchitectures="x86_64,arm64"/>
+
+    <welcome file="welcome.html"/>
+    <license file="license.html"/>
+
+    <choices-outline>
+        <line choice="default">
+            <line choice="com.langguard.cursor-otel-hook.main"/>
+        </line>
+    </choices-outline>
+
+    <choice id="default"/>
+
+    <choice id="com.langguard.cursor-otel-hook.main"
+            visible="false"
+            title="Cursor OTEL Hook"
+            description="OpenTelemetry integration for Cursor IDE">
+        <pkg-ref id="com.langguard.cursor-otel-hook.main"/>
+    </choice>
+
+    <pkg-ref id="com.langguard.cursor-otel-hook.main"
+             version="{{VERSION}}"
+             onConclusion="none">cursor-otel-hook-component.pkg</pkg-ref>
+</installer-gui-script>

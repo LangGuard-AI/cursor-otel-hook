@@ -66,6 +66,224 @@ The setup script will:
 4. Generate default configuration files
 5. Configure Cursor hooks to use the OTEL exporter
 
+---
+
+## Enterprise/MDM Deployment
+
+For enterprise deployments via MDM (Mobile Device Management) systems like Jamf Pro or Microsoft Intune, pre-built installer packages are available that support headless installation with centralized configuration.
+
+### Features
+
+- **Standalone executables** - No Python installation required (bundled via PyInstaller)
+- **MDM variable injection** - Configure OTEL endpoint, API keys, and settings at install time
+- **Per-user deployment** - Automatically deploys to each user's `~/.cursor/hooks/` directory
+- **Silent installation** - Fully headless, no user interaction required
+
+### Download
+
+Download the latest packages from the [Releases](https://github.com/LangGuard-AI/cursor_otel_hook/releases) page:
+
+- **macOS**: `cursor-otel-hook-X.X.X.pkg`
+- **Windows**: `cursor-otel-hook-X.X.X.msi`
+
+### macOS MDM Deployment
+
+#### Installation with Jamf Pro
+
+1. Upload the `.pkg` to Jamf Pro
+2. Create a Policy with the package
+3. Add a pre-install script to set configuration variables:
+
+```bash
+#!/bin/bash
+# Set these environment variables before the installer runs
+export OTEL_ENDPOINT="https://otel.company.com:4318/v1/traces"
+export SERVICE_NAME="cursor-agent-prod"
+export OTEL_PROTOCOL="http/json"
+export OTEL_HEADERS='{"Authorization": "Bearer YOUR_API_KEY"}'
+export MASK_PROMPTS="true"
+```
+
+4. Scope to target computers
+5. Set trigger (enrollment, recurring check-in, etc.)
+
+#### Command-Line Installation
+
+```bash
+# Basic installation (uses defaults)
+sudo installer -pkg cursor-otel-hook-1.0.0.pkg -target /
+
+# Installation with custom configuration
+export OTEL_ENDPOINT="https://otel.company.com:4318/v1/traces"
+export SERVICE_NAME="cursor-agent-prod"
+export OTEL_PROTOCOL="http/json"
+export OTEL_HEADERS='{"Authorization": "Bearer YOUR_API_KEY"}'
+sudo installer -pkg cursor-otel-hook-1.0.0.pkg -target /
+```
+
+#### How It Works (macOS)
+
+1. **System install**: Package installs to `/Library/Application Support/CursorOtelHook/`
+2. **LaunchAgent**: A LaunchAgent runs at each user login to deploy files
+3. **Per-user setup**: Copies executable and config to `~/.cursor/hooks/`
+4. **Daily sync**: LaunchAgent re-runs daily to keep config in sync with system
+
+### Windows MDM Deployment
+
+#### Installation with Microsoft Intune
+
+1. Upload the `.msi` as a Line-of-business app
+2. Set the install command with your configuration:
+
+```
+msiexec /i cursor-otel-hook-1.0.0.msi /qn OTEL_ENDPOINT="https://otel.company.com:4318/v1/traces" SERVICE_NAME="cursor-agent-prod" OTEL_PROTOCOL="http/json"
+```
+
+3. Set uninstall command:
+
+```
+msiexec /x {ProductCode} /qn
+```
+
+4. Assign to user/device groups
+
+#### Command-Line Installation
+
+```powershell
+# Basic silent installation
+msiexec /i cursor-otel-hook-1.0.0.msi /qn
+
+# Installation with custom configuration
+msiexec /i cursor-otel-hook-1.0.0.msi /qn `
+  OTEL_ENDPOINT="https://otel.company.com:4318/v1/traces" `
+  SERVICE_NAME="cursor-agent-prod" `
+  OTEL_PROTOCOL="http/json" `
+  OTEL_HEADERS="{\"Authorization\": \"Bearer YOUR_API_KEY\"}"
+```
+
+#### How It Works (Windows)
+
+1. **System install**: MSI installs to `C:\Program Files\CursorOtelHook\`
+2. **Active Setup**: Registry entry triggers per-user setup at first login
+3. **Per-user setup**: PowerShell script copies files to `%USERPROFILE%\.cursor\hooks\`
+
+### MDM Configuration Variables
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `OTEL_ENDPOINT` | OTLP collector endpoint URL | `http://localhost:4318/v1/traces` | Yes |
+| `SERVICE_NAME` | Service identifier in traces | `cursor-agent` | No |
+| `OTEL_PROTOCOL` | Protocol: `grpc`, `http/protobuf`, `http/json` | `http/json` | No |
+| `OTEL_HEADERS` | JSON object with auth headers | `null` | No |
+| `OTEL_INSECURE` | Allow insecure TLS (`true`/`false`) | `false` | No |
+| `MASK_PROMPTS` | Mask user prompts for privacy | `false` | No |
+| `OTEL_TIMEOUT` | Request timeout in seconds | `30` | No |
+
+### Building Packages from Source
+
+If you need to build custom packages:
+
+#### Prerequisites
+
+**macOS:**
+- Python 3.8+
+- Xcode Command Line Tools
+- PyInstaller (`pip install pyinstaller`)
+
+**Windows:**
+- Python 3.8+
+- [WiX Toolset v3.11+](https://wixtoolset.org/)
+- PyInstaller (`pip install pyinstaller`)
+
+#### Build Commands
+
+**macOS:**
+```bash
+# Build standalone executable
+cd packaging/pyinstaller && ./build_macos.sh
+
+# Build PKG installer
+cd ../macos && ./build_pkg.sh
+
+# Output: dist/macos/cursor-otel-hook-X.X.X.pkg
+```
+
+**Windows:**
+```powershell
+# Build standalone executable
+cd packaging\pyinstaller; .\build_windows.ps1
+
+# Build MSI installer
+cd ..\windows; .\build_msi.ps1
+
+# Output: dist\windows\cursor-otel-hook-X.X.X.msi
+```
+
+#### CI/CD
+
+GitHub Actions workflows are provided in `packaging/ci/`:
+- `build-macos.yml` - Builds macOS PKG on tag push
+- `build-windows.yml` - Builds Windows MSI on tag push
+
+### Verifying Installation
+
+After MDM deployment, verify the installation:
+
+**macOS:**
+```bash
+# Check system installation
+ls -la "/Library/Application Support/CursorOtelHook/"
+
+# Check user installation (as the user)
+ls -la ~/.cursor/hooks/
+
+# Test the hook
+echo '{"hook_event_name":"test"}' | ~/.cursor/hooks/cursor-otel-hook --config ~/.cursor/hooks/otel_config.json
+
+# View setup logs
+cat /tmp/cursor-otel-hook-setup-$USER.log
+```
+
+**Windows:**
+```powershell
+# Check system installation
+dir "C:\Program Files\CursorOtelHook"
+
+# Check user installation
+dir "$env:USERPROFILE\.cursor\hooks"
+
+# Test the hook
+echo '{"hook_event_name":"test"}' | & "$env:USERPROFILE\.cursor\hooks\cursor-otel-hook.exe" --config "$env:USERPROFILE\.cursor\hooks\otel_config.json"
+
+# View setup logs
+Get-Content "$env:TEMP\cursor-otel-hook-setup.log"
+```
+
+### Uninstalling
+
+**macOS:**
+```bash
+# Uninstall system files
+sudo rm -rf "/Library/Application Support/CursorOtelHook"
+sudo rm -f "/Library/LaunchAgents/com.langguard.cursor-otel-hook-setup.plist"
+
+# Uninstall user files (run as user)
+rm -rf ~/.cursor/hooks/cursor-otel-hook
+rm -f ~/.cursor/hooks/otel_config.json
+```
+
+**Windows:**
+```powershell
+# Uninstall via MSI
+msiexec /x cursor-otel-hook-1.0.0.msi /qn
+
+# Or via Add/Remove Programs
+# The per-user files can be cleaned up with:
+& "C:\Program Files\CursorOtelHook\scripts\Uninstall-UserHook.ps1"
+```
+
+---
+
 ### Configuration
 
 #### JSON Configuration File (Recommended)
@@ -541,10 +759,33 @@ cursor_otel_hook/
 │       ├── hook_receiver.py      # Main hook processor
 │       ├── json_exporter.py      # Custom OTLP/JSON exporter
 │       └── privacy.py            # Data masking utilities
+├── packaging/                    # MDM/Enterprise packaging
+│   ├── pyinstaller/              # PyInstaller build configs
+│   │   ├── cursor_otel_hook.spec
+│   │   ├── build_macos.sh
+│   │   ├── build_windows.ps1
+│   │   └── hooks/
+│   ├── config/                   # Configuration templates
+│   │   ├── otel_config.template.json
+│   │   └── hooks.template.json
+│   ├── macos/                    # macOS PKG packaging
+│   │   ├── Distribution.xml
+│   │   ├── build_pkg.sh
+│   │   ├── scripts/
+│   │   ├── launchagent/
+│   │   └── resources/
+│   ├── windows/                  # Windows MSI packaging
+│   │   ├── Product.wxs
+│   │   ├── build_msi.ps1
+│   │   └── scripts/
+│   └── ci/                       # GitHub Actions workflows
+│       ├── build-macos.yml
+│       └── build-windows.yml
 ├── setup.sh                      # Unix/macOS setup script
 ├── setup.ps1                     # Windows setup script
 ├── pyproject.toml                # Project metadata
 ├── requirements.txt              # Dependencies
+├── VERSION                       # Version for packaging
 └── README.md                     # This file
 ```
 

@@ -1,0 +1,87 @@
+#!/bin/bash
+# Post-installation script for Cursor OTEL Hook
+# Runs as root after files are installed
+# MDM can pass configuration via environment variables
+
+set -e
+
+INSTALL_DIR="/Library/Application Support/CursorOtelHook"
+LAUNCHAGENT_DIR="/Library/LaunchAgents"
+LAUNCHAGENT_PLIST="com.langguard.cursor-otel-hook-setup.plist"
+
+echo "Post-install: Cursor OTEL Hook"
+
+# Process configuration template with MDM variables
+CONFIG_TEMPLATE="$INSTALL_DIR/otel_config.template.json"
+CONFIG_OUTPUT="$INSTALL_DIR/otel_config.json"
+
+if [ -f "$CONFIG_TEMPLATE" ]; then
+    echo "Processing configuration template..."
+
+    # Read template
+    CONFIG_CONTENT=$(cat "$CONFIG_TEMPLATE")
+
+    # Apply MDM variables with defaults
+    # Required: OTEL_ENDPOINT
+    OTEL_ENDPOINT="${OTEL_ENDPOINT:-http://localhost:4318/v1/traces}"
+
+    # Optional with defaults
+    SERVICE_NAME="${SERVICE_NAME:-cursor-agent}"
+    OTEL_PROTOCOL="${OTEL_PROTOCOL:-http/json}"
+    OTEL_INSECURE="${OTEL_INSECURE:-false}"
+    MASK_PROMPTS="${MASK_PROMPTS:-false}"
+    OTEL_TIMEOUT="${OTEL_TIMEOUT:-30}"
+
+    # Handle OTEL_HEADERS - can be JSON object or null
+    if [ -z "$OTEL_HEADERS" ] || [ "$OTEL_HEADERS" = "null" ]; then
+        OTEL_HEADERS_VALUE="null"
+    else
+        OTEL_HEADERS_VALUE="$OTEL_HEADERS"
+    fi
+
+    # Perform substitutions
+    CONFIG_CONTENT=$(echo "$CONFIG_CONTENT" | sed "s|{{OTEL_ENDPOINT}}|$OTEL_ENDPOINT|g")
+    CONFIG_CONTENT=$(echo "$CONFIG_CONTENT" | sed "s|{{SERVICE_NAME}}|$SERVICE_NAME|g")
+    CONFIG_CONTENT=$(echo "$CONFIG_CONTENT" | sed "s|{{OTEL_PROTOCOL}}|$OTEL_PROTOCOL|g")
+    CONFIG_CONTENT=$(echo "$CONFIG_CONTENT" | sed "s|{{OTEL_INSECURE}}|$OTEL_INSECURE|g")
+    CONFIG_CONTENT=$(echo "$CONFIG_CONTENT" | sed "s|{{MASK_PROMPTS}}|$MASK_PROMPTS|g")
+    CONFIG_CONTENT=$(echo "$CONFIG_CONTENT" | sed "s|{{OTEL_TIMEOUT}}|$OTEL_TIMEOUT|g")
+    CONFIG_CONTENT=$(echo "$CONFIG_CONTENT" | sed "s|{{OTEL_HEADERS}}|$OTEL_HEADERS_VALUE|g")
+
+    # Write processed config
+    echo "$CONFIG_CONTENT" > "$CONFIG_OUTPUT"
+    chmod 644 "$CONFIG_OUTPUT"
+    echo "Configuration written to: $CONFIG_OUTPUT"
+    echo "  Endpoint: $OTEL_ENDPOINT"
+    echo "  Service: $SERVICE_NAME"
+    echo "  Protocol: $OTEL_PROTOCOL"
+fi
+
+# Set permissions on executable
+chmod 755 "$INSTALL_DIR/cursor-otel-hook"
+chmod 755 "$INSTALL_DIR/setup-user.sh"
+
+# Set permissions on LaunchAgent
+chmod 644 "$LAUNCHAGENT_DIR/$LAUNCHAGENT_PLIST"
+
+# Load LaunchAgent for all current users
+echo "Loading LaunchAgent for current users..."
+for USER_HOME in /Users/*; do
+    if [ -d "$USER_HOME" ] && [ "$(basename "$USER_HOME")" != "Shared" ]; then
+        USER_NAME=$(basename "$USER_HOME")
+        USER_ID=$(id -u "$USER_NAME" 2>/dev/null || continue)
+
+        if [ "$USER_ID" -ge 500 ]; then
+            echo "  Loading for user: $USER_NAME (uid=$USER_ID)"
+            launchctl bootstrap "gui/$USER_ID" "$LAUNCHAGENT_DIR/$LAUNCHAGENT_PLIST" 2>/dev/null || true
+
+            # Also run the setup immediately for this user
+            sudo -u "$USER_NAME" "$INSTALL_DIR/setup-user.sh" 2>/dev/null || true
+        fi
+    fi
+done
+
+echo ""
+echo "Post-install complete"
+echo "Users may need to restart Cursor IDE for hooks to take effect"
+exit 0

@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WiX source file for Cursor OTEL Hook MSI installer
+  Build with: candle.exe Product.wxs && light.exe Product.wixobj
+  Requires: WiX Toolset v3.11+ (https://wixtoolset.org/)
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+
+  <?define ProductName = "Cursor OTEL Hook" ?>
+  <?define Manufacturer = "LangGuard" ?>
+  <?define UpgradeCode = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890" ?>
+
+  <Product Id="*"
+           Name="$(var.ProductName)"
+           Language="1033"
+           Version="$(var.ProductVersion)"
+           Manufacturer="$(var.Manufacturer)"
+           UpgradeCode="$(var.UpgradeCode)">
+
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Description="OpenTelemetry integration for Cursor IDE"
+             Comments="Captures agent activity and exports traces to OTEL collectors"
+             Manufacturer="$(var.Manufacturer)"/>
+
+    <!-- Allow upgrades, prevent downgrades -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed."
+                  AllowSameVersionUpgrades="yes"/>
+
+    <!-- Embed all files in the MSI -->
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high"/>
+
+    <!-- Properties that can be set via command line for MDM -->
+    <Property Id="OTEL_ENDPOINT" Value="http://localhost:4318/v1/traces" Secure="yes"/>
+    <Property Id="SERVICE_NAME" Value="cursor-agent" Secure="yes"/>
+    <Property Id="OTEL_PROTOCOL" Value="http/json" Secure="yes"/>
+    <Property Id="OTEL_INSECURE" Value="false" Secure="yes"/>
+    <Property Id="MASK_PROMPTS" Value="false" Secure="yes"/>
+    <Property Id="OTEL_TIMEOUT" Value="30" Secure="yes"/>
+    <Property Id="OTEL_HEADERS" Value="null" Secure="yes"/>
+
+    <!-- Icon for Add/Remove Programs -->
+    <Icon Id="AppIcon.ico" SourceFile="$(var.BuildDir)\cursor-otel-hook.exe"/>
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico"/>
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/LangGuard-AI/cursor_otel_hook"/>
+
+    <!-- Main feature -->
+    <Feature Id="MainFeature" Title="Cursor OTEL Hook" Level="1" Absent="disallow">
+      <ComponentGroupRef Id="MainComponents"/>
+      <ComponentGroupRef Id="ConfigComponents"/>
+      <ComponentGroupRef Id="ScriptComponents"/>
+      <ComponentRef Id="ActiveSetupComponent"/>
+    </Feature>
+
+    <!-- Custom action to process config template -->
+    <SetProperty Id="ProcessConfigTemplate"
+                 Value="INSTALLDIR=[INSTALLDIR];OTEL_ENDPOINT=[OTEL_ENDPOINT];SERVICE_NAME=[SERVICE_NAME];OTEL_PROTOCOL=[OTEL_PROTOCOL];OTEL_INSECURE=[OTEL_INSECURE];MASK_PROMPTS=[MASK_PROMPTS];OTEL_TIMEOUT=[OTEL_TIMEOUT];OTEL_HEADERS=[OTEL_HEADERS]"
+                 Before="ProcessConfigTemplate"
+                 Sequence="execute"/>
+
+    <CustomAction Id="ProcessConfigTemplate"
+                  Directory="INSTALLDIR"
+                  ExeCommand="powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File &quot;[INSTALLDIR]scripts\Process-Config.ps1&quot; -InstallDir &quot;[INSTALLDIR].&quot; -OtelEndpoint &quot;[OTEL_ENDPOINT]&quot; -ServiceName &quot;[SERVICE_NAME]&quot; -OtelProtocol &quot;[OTEL_PROTOCOL]&quot; -OtelInsecure &quot;[OTEL_INSECURE]&quot; -MaskPrompts &quot;[MASK_PROMPTS]&quot; -OtelTimeout &quot;[OTEL_TIMEOUT]&quot; -OtelHeaders &quot;[OTEL_HEADERS]&quot;"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore"/>
+
+    <InstallExecuteSequence>
+      <Custom Action="ProcessConfigTemplate" After="InstallFiles">NOT Installed</Custom>
+    </InstallExecuteSequence>
+
+    <!-- UI - basic progress bar only (silent capable) -->
+    <UIRef Id="WixUI_Minimal"/>
+
+  </Product>
+
+  <!-- Directory structure -->
+  <Fragment>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="CursorOtelHook">
+          <Directory Id="ScriptsDir" Name="scripts"/>
+        </Directory>
+      </Directory>
+    </Directory>
+  </Fragment>
+
+  <!-- Main executable -->
+  <Fragment>
+    <ComponentGroup Id="MainComponents" Directory="INSTALLDIR">
+      <Component Id="MainExecutable" Guid="B2C3D4E5-F6A7-8901-BCDE-F23456789012" Win64="yes">
+        <File Id="CursorOtelHookExe"
+              Source="$(var.BuildDir)\cursor-otel-hook.exe"
+              KeyPath="yes"/>
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <!-- Configuration templates -->
+  <Fragment>
+    <ComponentGroup Id="ConfigComponents" Directory="INSTALLDIR">
+      <Component Id="ConfigTemplate" Guid="C3D4E5F6-A7B8-9012-CDEF-345678901234" Win64="yes">
+        <File Id="ConfigTemplateJson"
+              Source="..\config\otel_config.template.json"
+              Name="otel_config.template.json"
+              KeyPath="yes"/>
+      </Component>
+      <Component Id="HooksTemplate" Guid="D4E5F6A7-B8C9-0123-DEF0-456789012345" Win64="yes">
+        <File Id="HooksTemplateJson"
+              Source="..\config\hooks.template.json"
+              Name="hooks.template.json"
+              KeyPath="yes"/>
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <!-- PowerShell scripts -->
+  <Fragment>
+    <ComponentGroup Id="ScriptComponents" Directory="ScriptsDir">
+      <Component Id="InstallScript" Guid="E5F6A7B8-C9D0-1234-EF01-567890123456" Win64="yes">
+        <File Id="InstallUserHookPs1"
+              Source="scripts\Install-UserHook.ps1"
+              Name="Install-UserHook.ps1"
+              KeyPath="yes"/>
+      </Component>
+      <Component Id="UninstallScript" Guid="F6A7B8C9-D0E1-2345-F012-678901234567" Win64="yes">
+        <File Id="UninstallUserHookPs1"
+              Source="scripts\Uninstall-UserHook.ps1"
+              Name="Uninstall-UserHook.ps1"/>
+      </Component>
+      <Component Id="ProcessConfigScript" Guid="A7B8C9D0-E1F2-3456-0123-789012345678" Win64="yes">
+        <File Id="ProcessConfigPs1"
+              Source="scripts\Process-Config.ps1"
+              Name="Process-Config.ps1"/>
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <!-- Active Setup for per-user installation -->
+  <Fragment>
+    <Component Id="ActiveSetupComponent" Directory="INSTALLDIR" Guid="B8C9D0E1-F2A3-4567-1234-890123456789" Win64="yes">
+      <RegistryKey Root="HKLM"
+                   Key="SOFTWARE\Microsoft\Active Setup\Installed Components\{C9D0E1F2-A3B4-5678-2345-901234567890}">
+        <RegistryValue Type="string" Name="" Value="Cursor OTEL Hook User Setup"/>
+        <RegistryValue Type="string" Name="StubPath"
+                       Value="powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File &quot;[INSTALLDIR]scripts\Install-UserHook.ps1&quot; -InstallDir &quot;[INSTALLDIR].&quot;"/>
+        <RegistryValue Type="string" Name="Version" Value="$(var.ProductVersion)"/>
+      </RegistryKey>
+    </Component>
+  </Fragment>
+
+</Wix>

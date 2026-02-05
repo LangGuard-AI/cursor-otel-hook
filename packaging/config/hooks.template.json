@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "{{HOOK_COMMAND}}",
+        "timeout": {{HOOK_TIMEOUT}}
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "{{HOOK_COMMAND}}",
+        "timeout": {{HOOK_TIMEOUT}}
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "{{HOOK_COMMAND}}",
+        "timeout": {{HOOK_TIMEOUT}}
+      }
+    ],
+    "afterShellExecution": [
+      {
+        "command": "{{HOOK_COMMAND}}",
+        "timeout": {{HOOK_TIMEOUT}}
+      }
+    ],
+    "afterMCPExecution": [
+      {
+        "command": "{{HOOK_COMMAND}}",
+        "timeout": {{HOOK_TIMEOUT}}
+      }
+    ],
+    "beforeReadFile": [
+      {
+        "command": "{{HOOK_COMMAND}}",
+        "timeout": {{HOOK_TIMEOUT}}
+      }
+    ],
+    "afterFileEdit": [
+      {
+        "command": "{{HOOK_COMMAND}}",
+        "timeout": {{HOOK_TIMEOUT}}
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "{{HOOK_COMMAND}}",
+        "timeout": {{HOOK_TIMEOUT}}
+      }
+    ],
+    "subagentStart": [
+      {
+        "command": "{{HOOK_COMMAND}}",
+        "timeout": {{HOOK_TIMEOUT}}
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": "{{HOOK_COMMAND}}",
+        "timeout": {{HOOK_TIMEOUT}}
+      }
+    ],
+    "stop": [
+      {
+        "command": "{{HOOK_COMMAND}}",
+        "timeout": {{HOOK_TIMEOUT}}
+      }
+    ]
+  }
+}
