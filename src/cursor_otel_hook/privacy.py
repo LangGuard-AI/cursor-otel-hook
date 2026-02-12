@@ -72,7 +72,7 @@ def mask_path(path: str) -> str:
     patterns = [
         (r"/home/[^/]+", "/home/[USER]"),
         (r"/Users/[^/]+", "/Users/[USER]"),
-        (r"C:\\Users\\[^\\]+", "C:\\Users\\[USER]"),
+        (r"C:\\Users\\[^\\]+", "C:\\\\Users\\\\[USER]"),
         (r"/root", "/[USER]"),
     ]
 
