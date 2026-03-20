@@ -111,10 +111,52 @@ EOF
 chmod +x "$WRAPPER_SCRIPT"
 echo -e "${GREEN}✓${NC} Created $WRAPPER_SCRIPT"
 
-# Create hooks.json configuration
+# Create/merge hooks.json configuration
 HOOKS_CONFIG="$HOME/.cursor/hooks.json"
-if [ ! -f "$HOOKS_CONFIG" ]; then
-    echo ""
+HOOK_EVENTS="sessionStart sessionEnd postToolUse afterShellExecution afterMCPExecution beforeReadFile afterFileEdit beforeSubmitPrompt subagentStart subagentStop stop"
+
+merge_otel_hooks() {
+    python3 - "$@" << 'PYEOF'
+import json, sys
+
+hooks_file = sys.argv[1]
+hook_command = sys.argv[2]
+events = sys.argv[3:]
+
+with open(hooks_file, 'r') as f:
+    data = json.load(f)
+
+data.setdefault('version', 1)
+data.setdefault('hooks', {})
+
+changed = False
+for event in events:
+    entry = {'command': hook_command, 'timeout': 5}
+    if event not in data['hooks']:
+        data['hooks'][event] = [entry]
+        changed = True
+    else:
+        cmds = [h.get('command', '') for h in data['hooks'][event]]
+        if hook_command not in cmds:
+            data['hooks'][event].append(entry)
+            changed = True
+
+if changed:
+    with open(hooks_file, 'w') as f:
+        json.dump(data, f, indent=2)
+        f.write('\n')
+PYEOF
+}
+
+echo ""
+if [ -f "$HOOKS_CONFIG" ]; then
+    echo "Merging otel hook into existing hooks.json..."
+    if merge_otel_hooks "$HOOKS_CONFIG" "$WRAPPER_SCRIPT" $HOOK_EVENTS; then
+        echo -e "${GREEN}✓${NC} Merged otel hooks into $HOOKS_CONFIG"
+    else
+        echo -e "${RED}✗${NC} Failed to merge hooks - you may need to manually add the otel hook entries"
+    fi
+else
     echo "Creating hooks.json configuration..."
     cat > "$HOOKS_CONFIG" << EOF
 {
@@ -190,9 +232,6 @@ if [ ! -f "$HOOKS_CONFIG" ]; then
 }
 EOF
     echo -e "${GREEN}✓${NC} Created $HOOKS_CONFIG"
-else
-    echo -e "${YELLOW}!${NC} hooks.json already exists at $HOOKS_CONFIG"
-    echo "   You may need to manually merge the configuration"
 fi
 
 # Copy example HTTP config for reference

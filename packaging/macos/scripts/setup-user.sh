@@ -55,30 +55,67 @@ else
     log "WARNING: No system configuration found, user will need to configure manually"
 fi
 
-# Create hooks.json if it doesn't exist
+# Create or merge hooks.json
 HOOKS_JSON="$USER_CURSOR_DIR/hooks.json"
 HOOKS_TEMPLATE="$INSTALL_DIR/hooks.template.json"
+HOOK_COMMAND="$HOOK_EXECUTABLE --config $CONFIG_FILE"
+HOOK_TIMEOUT="5"
+HOOK_EVENTS="sessionStart sessionEnd postToolUse afterShellExecution afterMCPExecution beforeReadFile afterFileEdit beforeSubmitPrompt subagentStart subagentStop stop"
 
-if [ ! -f "$HOOKS_JSON" ]; then
-    if [ -f "$HOOKS_TEMPLATE" ]; then
-        # Build the hook command
-        HOOK_COMMAND="$HOOK_EXECUTABLE --config $CONFIG_FILE"
-        HOOK_TIMEOUT="5"
+if [ -f "$HOOKS_JSON" ]; then
+    # Merge otel hooks into existing hooks.json
+    log "hooks.json already exists at $HOOKS_JSON - merging otel hooks"
+    if command -v python3 &> /dev/null; then
+        if python3 - "$HOOKS_JSON" "$HOOK_COMMAND" $HOOK_EVENTS << 'PYEOF'
+import json, sys
 
-        # Read template and substitute
-        HOOKS_CONTENT=$(cat "$HOOKS_TEMPLATE")
-        HOOKS_CONTENT=$(echo "$HOOKS_CONTENT" | sed "s|{{HOOK_COMMAND}}|$HOOK_COMMAND|g")
-        HOOKS_CONTENT=$(echo "$HOOKS_CONTENT" | sed "s|{{HOOK_TIMEOUT}}|$HOOK_TIMEOUT|g")
+hooks_file = sys.argv[1]
+hook_command = sys.argv[2]
+events = sys.argv[3:]
 
-        echo "$HOOKS_CONTENT" > "$HOOKS_JSON"
-        chmod 644 "$HOOKS_JSON"
-        log "Created hooks.json at: $HOOKS_JSON"
+with open(hooks_file, 'r') as f:
+    data = json.load(f)
+
+data.setdefault('version', 1)
+data.setdefault('hooks', {})
+
+changed = False
+for event in events:
+    entry = {'command': hook_command, 'timeout': 5}
+    if event not in data['hooks']:
+        data['hooks'][event] = [entry]
+        changed = True
+    else:
+        cmds = [h.get('command', '') for h in data['hooks'][event]]
+        if hook_command not in cmds:
+            data['hooks'][event].append(entry)
+            changed = True
+
+if changed:
+    with open(hooks_file, 'w') as f:
+        json.dump(data, f, indent=2)
+        f.write('\n')
+PYEOF
+        then
+            log "Merged otel hooks into $HOOKS_JSON"
+        else
+            log "WARNING: Failed to merge hooks.json - manual merge may be needed"
+        fi
     else
-        log "ERROR: hooks.template.json not found"
+        log "WARNING: python3 not found, cannot auto-merge hooks.json"
+        log "Manual merge may be needed to add otel hook entries"
     fi
+elif [ -f "$HOOKS_TEMPLATE" ]; then
+    # Create hooks.json from template
+    HOOKS_CONTENT=$(cat "$HOOKS_TEMPLATE")
+    HOOKS_CONTENT=$(echo "$HOOKS_CONTENT" | sed "s|{{HOOK_COMMAND}}|$HOOK_COMMAND|g")
+    HOOKS_CONTENT=$(echo "$HOOKS_CONTENT" | sed "s|{{HOOK_TIMEOUT}}|$HOOK_TIMEOUT|g")
+
+    echo "$HOOKS_CONTENT" > "$HOOKS_JSON"
+    chmod 644 "$HOOKS_JSON"
+    log "Created hooks.json at: $HOOKS_JSON"
 else
-    log "hooks.json already exists at $HOOKS_JSON"
-    log "NOTE: Manual merge may be needed if hooks were added"
+    log "ERROR: hooks.template.json not found"
 fi
 
 log "User setup complete"

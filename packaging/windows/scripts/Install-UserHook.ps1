@@ -75,33 +75,71 @@ try {
         Write-Log "User will need to configure otel_config.json manually"
     }
 
-    # Create hooks.json if it doesn't exist
+    # Create or merge hooks.json
     $HooksJson = Join-Path $UserCursorDir "hooks.json"
     $HooksTemplate = Join-Path $InstallDir "hooks.template.json"
 
-    if (!(Test-Path $HooksJson)) {
-        if (Test-Path $HooksTemplate) {
-            # Read template
-            $HooksContent = Get-Content $HooksTemplate -Raw
+    # Build hook command
+    $HookCommand = "$DestExe --config `"$DestConfig`""
+    $HookTimeout = 5
+    $HookEvents = @("sessionStart", "sessionEnd", "postToolUse", "afterShellExecution", "afterMCPExecution", "beforeReadFile", "afterFileEdit", "beforeSubmitPrompt", "subagentStart", "subagentStop", "stop")
 
-            # Build hook command with escaped backslashes for JSON
-            $HookCommand = "$DestExe --config `"$DestConfig`""
-            $HookCommandEscaped = $HookCommand -replace '\\', '\\'
-            $HookTimeout = "5"
+    if (Test-Path $HooksJson) {
+        # Merge otel hooks into existing hooks.json
+        try {
+            $ExistingContent = Get-Content $HooksJson -Raw | ConvertFrom-Json
 
-            # Substitute placeholders
-            $HooksContent = $HooksContent -replace '\{\{HOOK_COMMAND\}\}', $HookCommandEscaped
-            $HooksContent = $HooksContent -replace '\{\{HOOK_TIMEOUT\}\}', $HookTimeout
+            if (-not $ExistingContent.hooks) {
+                $ExistingContent | Add-Member -NotePropertyName "hooks" -NotePropertyValue ([PSCustomObject]@{}) -Force
+            }
+            if (-not $ExistingContent.version) {
+                $ExistingContent | Add-Member -NotePropertyName "version" -NotePropertyValue 1 -Force
+            }
 
-            # Write hooks.json
-            Set-Content -Path $HooksJson -Value $HooksContent -Encoding UTF8
-            Write-Log "Created hooks.json at: $HooksJson"
-        } else {
-            Write-Log "ERROR: hooks.template.json not found at $HooksTemplate"
+            $Changed = $false
+            foreach ($Event in $HookEvents) {
+                $NewEntry = [PSCustomObject]@{
+                    command = $HookCommand
+                    timeout = $HookTimeout
+                }
+
+                if (-not $ExistingContent.hooks.PSObject.Properties[$Event]) {
+                    $ExistingContent.hooks | Add-Member -NotePropertyName $Event -NotePropertyValue @($NewEntry) -Force
+                    $Changed = $true
+                } else {
+                    $ExistingHooks = @($ExistingContent.hooks.$Event)
+                    $ExistingCommands = $ExistingHooks | ForEach-Object { $_.command }
+                    if ($HookCommand -notin $ExistingCommands) {
+                        $ExistingContent.hooks.$Event = @($ExistingHooks) + $NewEntry
+                        $Changed = $true
+                    }
+                }
+            }
+
+            if ($Changed) {
+                $ExistingContent | ConvertTo-Json -Depth 10 | Set-Content -Path $HooksJson -Encoding UTF8
+            }
+            Write-Log "Merged otel hooks into $HooksJson"
+        } catch {
+            Write-Log "WARNING: Failed to merge hooks.json: $($_.Exception.Message)"
+            Write-Log "Manual merge may be needed to add otel hook entries"
         }
+    } elseif (Test-Path $HooksTemplate) {
+        # Create hooks.json from template
+        $HooksContent = Get-Content $HooksTemplate -Raw
+
+        # Escape backslashes for JSON string substitution
+        $HookCommandEscaped = $HookCommand -replace '\\', '\\'
+
+        # Substitute placeholders
+        $HooksContent = $HooksContent -replace '\{\{HOOK_COMMAND\}\}', $HookCommandEscaped
+        $HooksContent = $HooksContent -replace '\{\{HOOK_TIMEOUT\}\}', $HookTimeout
+
+        # Write hooks.json
+        Set-Content -Path $HooksJson -Value $HooksContent -Encoding UTF8
+        Write-Log "Created hooks.json at: $HooksJson"
     } else {
-        Write-Log "hooks.json already exists at $HooksJson"
-        Write-Log "NOTE: Manual merge may be needed if you have custom hooks"
+        Write-Log "ERROR: hooks.template.json not found at $HooksTemplate"
     }
 
     Write-Log "=========================================="
